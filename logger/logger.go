@@ -31,9 +31,9 @@ var logger *zap.Logger
 
 // Config 日志配置
 type Config struct {
-	Level      LevelConfig
-	Format     FormatConfig
-	OutputPath string
+	Level      LevelConfig  `mapstructure:"level" json:"level" yaml:"level"`
+	Format     FormatConfig `mapstructure:"format" json:"format" yaml:"format"`
+	OutputPath string       `mapstructure:"output_path" json:"output_path" yaml:"output_path"`
 }
 
 func LogInit(cfg Config) {
