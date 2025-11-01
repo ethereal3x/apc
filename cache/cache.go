@@ -4,8 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/redis/go-redis/v9"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 )
 
 type RedisClient struct {
@@ -184,4 +185,22 @@ func (r *RedisClient) SMembers(key string) ([]string, error) {
 		return nil, fmt.Errorf("cache: smembers %q: %w", key, err)
 	}
 	return members, nil
+}
+
+// SIsMember 检查元素是否在集合中
+func (r *RedisClient) SIsMember(key string, member interface{}) (bool, error) {
+	exists, err := r.client.SIsMember(r.ctx, key, member).Result()
+	if err != nil {
+		return false, fmt.Errorf("cache: sismember %q: %w", key, err)
+	}
+	return exists, nil
+}
+
+// SCard 获取集合中元素的数量
+func (r *RedisClient) SCard(key string) (int64, error) {
+	count, err := r.client.SCard(r.ctx, key).Result()
+	if err != nil {
+		return 0, fmt.Errorf("cache: scard %q: %w", key, err)
+	}
+	return count, nil
 }

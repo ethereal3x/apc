@@ -2,10 +2,11 @@ package cache
 
 import (
 	"context"
-	"github.com/redis/go-redis/v9"
-	"github.com/stretchr/testify/assert"
 	"testing"
 	"time"
+
+	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestRedisClient(t *testing.T) {
@@ -151,5 +152,124 @@ func TestRedisClient(t *testing.T) {
 		got, err := redisClient.SMembers(setKey)
 		assert.Nil(t, err, "Should not return error while getting set members")
 		assert.ElementsMatch(t, members, got, "The set members should match")
+	})
+
+	// 测试存储十万条用户 ID 到集合中 -- 0.055s
+	t.Run("Test Store 10000 User IDs", func(t *testing.T) {
+		setKey := "user_ids_set"
+		startID := 1000
+		count := 100000
+		ttl := 30 * 24 * time.Hour // 30 天
+
+		// 生成用户 ID 列表（从 1000 到 10999）
+		userIDs := make([]interface{}, count)
+		for i := 0; i < count; i++ {
+			userIDs[i] = startID + i
+		}
+
+		// 批量添加用户 ID 到集合
+		addedCount, err := redisClient.SAdd(setKey, userIDs...)
+		assert.Nil(t, err, "Should not return error while adding user IDs to set")
+		assert.Equal(t, int64(count), addedCount, "The number of added user IDs should be 10000")
+
+		// 设置过期时间为 30 天
+		err = redisClient.Expire(setKey, ttl)
+		assert.Nil(t, err, "Should not return error while setting expiration")
+
+		// 验证过期时间是否设置成功
+		remainingTTL, err := redisClient.TTL(setKey)
+		assert.Nil(t, err, "Should not return error while getting TTL")
+		assert.True(t, remainingTTL > 0 && remainingTTL <= ttl, "TTL should be set correctly")
+
+		// 验证集合中的元素数量
+		members, err := redisClient.SMembers(setKey)
+		assert.Nil(t, err, "Should not return error while getting set members")
+		assert.Equal(t, count, len(members), "The set should contain 10000 members")
+	})
+
+	// 测试从十万条数据中查询某个 ID 是否存在
+	/**
+	cache_test.go:223: 查询存在的 ID (1000) 耗时: 145.5µs
+	cache_test.go:232: 查询存在的 ID (51000) 耗时: 134.458µs
+	cache_test.go:241: 查询存在的 ID (100999) 耗时: 125.834µs
+	cache_test.go:250: 查询不存在的 ID (102000) 耗时: 119.959µs
+	cache_test.go:262: 批量查询 1000 次总耗时: 82.531208ms, 平均每次: 82.531µs
+	*/
+	t.Run("Test Query User ID Existence Speed", func(t *testing.T) {
+		setKey := "user_ids_query_test"
+		startID := 1000
+		count := 100000
+		ttl := 30 * 24 * time.Hour // 30 天
+
+		// 生成用户 ID 列表（从 1000 到 100999）
+		userIDs := make([]interface{}, count)
+		for i := 0; i < count; i++ {
+			userIDs[i] = startID + i
+		}
+
+		// 批量添加用户 ID 到集合
+		_, err := redisClient.SAdd(setKey, userIDs...)
+		assert.Nil(t, err, "Should not return error while adding user IDs to set")
+
+		// 设置过期时间
+		err = redisClient.Expire(setKey, ttl)
+		assert.Nil(t, err, "Should not return error while setting expiration")
+
+		// 验证集合大小
+		cardCount, err := redisClient.SCard(setKey)
+		assert.Nil(t, err, "Should not return error while getting set card")
+		assert.Equal(t, int64(count), cardCount, "The set should contain 100000 members")
+
+		// 测试查询存在的 ID（第一个）
+		testID1 := startID
+		start1 := time.Now()
+		exists1, err := redisClient.SIsMember(setKey, testID1)
+		duration1 := time.Since(start1)
+		assert.Nil(t, err, "Should not return error while checking member existence")
+		assert.True(t, exists1, "The user ID should exist in the set")
+		t.Logf("查询存在的 ID (%d) 耗时: %v", testID1, duration1)
+
+		// 测试查询存在的 ID（中间）
+		testID2 := startID + count/2
+		start2 := time.Now()
+		exists2, err := redisClient.SIsMember(setKey, testID2)
+		duration2 := time.Since(start2)
+		assert.Nil(t, err, "Should not return error while checking member existence")
+		assert.True(t, exists2, "The user ID should exist in the set")
+		t.Logf("查询存在的 ID (%d) 耗时: %v", testID2, duration2)
+
+		// 测试查询存在的 ID（最后一个）
+		testID3 := startID + count - 1
+		start3 := time.Now()
+		exists3, err := redisClient.SIsMember(setKey, testID3)
+		duration3 := time.Since(start3)
+		assert.Nil(t, err, "Should not return error while checking member existence")
+		assert.True(t, exists3, "The user ID should exist in the set")
+		t.Logf("查询存在的 ID (%d) 耗时: %v", testID3, duration3)
+
+		// 测试查询不存在的 ID
+		testID4 := startID + count + 1000
+		start4 := time.Now()
+		exists4, err := redisClient.SIsMember(setKey, testID4)
+		duration4 := time.Since(start4)
+		assert.Nil(t, err, "Should not return error while checking member existence")
+		assert.False(t, exists4, "The user ID should not exist in the set")
+		t.Logf("查询不存在的 ID (%d) 耗时: %v", testID4, duration4)
+
+		// 批量查询测试（连续查询 1000 次）
+		batchCount := 1000
+		batchStart := time.Now()
+		for i := 0; i < batchCount; i++ {
+			testID := startID + (i * count / batchCount)
+			_, err := redisClient.SIsMember(setKey, testID)
+			assert.Nil(t, err, "Should not return error in batch query")
+		}
+		batchDuration := time.Since(batchStart)
+		avgDuration := batchDuration / time.Duration(batchCount)
+		t.Logf("批量查询 %d 次总耗时: %v, 平均每次: %v", batchCount, batchDuration, avgDuration)
+
+		// 清理测试数据
+		err = redisClient.Del(setKey)
+		assert.Nil(t, err, "Should not return error while cleaning up test data")
 	})
 }
