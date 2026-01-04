@@ -11,7 +11,7 @@ func (e *BizError) Error() string {
 	return e.Msg
 }
 
-func New(code ErrorCode, msg string, err error) error {
+func New(code ErrorCode, msg string) error {
 	return &BizError{
 		Code: code,
 		Msg:  msg,
