@@ -2,3 +2,4 @@
 .vscode
 app.log
 *.log
+config.yaml
