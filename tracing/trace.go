@@ -24,8 +24,6 @@ func InitJaegerProvider(jaegerURL, serviceName string) (func(ctx context.Context
 		panic("empty jaeger url")
 	}
 
-	tracer = otel.Tracer(serviceName)
-
 	exp, err := jaeger.New(jaeger.WithCollectorEndpoint(jaeger.WithEndpoint(jaegerURL)))
 	if err != nil {
 		return nil, err
@@ -38,6 +36,7 @@ func InitJaegerProvider(jaegerURL, serviceName string) (func(ctx context.Context
 		)),
 	)
 	otel.SetTracerProvider(tp)
+	tracer = otel.Tracer(serviceName)
 
 	b3Propagator := b3.New(b3.WithInjectEncoding(b3.B3MultipleHeader))
 	p := propagation.NewCompositeTextMapPropagator(
@@ -57,6 +56,12 @@ func Start(ctx context.Context, name string) (context.Context, trace.Span) {
 func TraceID(ctx context.Context) string {
 	spanCtx := trace.SpanContextFromContext(ctx)
 	return spanCtx.TraceID().String()
+}
+
+// SpanID 获取 SpanID
+func SpanID(ctx context.Context) string {
+	spanCtx := trace.SpanContextFromContext(ctx)
+	return spanCtx.SpanID().String()
 }
 
 // RecordError 会将 error 记录到当前 Span，并设置 Span 状态为 Error
