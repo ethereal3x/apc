@@ -13,7 +13,7 @@ import (
 )
 
 // NewGormInstance 创建 Gorm 数据库实例
-func NewGormInstance(dbConf *config.GormConfig, conf ...*gorm.Config) *gorm.DB {
+func NewGormInstance(dbConf *config.GormConfig, conf ...*gorm.Config) (*gorm.DB, error) {
 	gormConfig := &gorm.Config{}
 	if len(conf) > 0 && conf[0] != nil {
 		configValue := *conf[0]
@@ -27,26 +27,23 @@ func NewGormInstance(dbConf *config.GormConfig, conf ...*gorm.Config) *gorm.DB {
 		gormConfig.Logger = NewGormDBLog().LogMode(logLevel)
 	}
 
-	// 初始化数据库连接
 	db, err := gorm.Open(newDBDriver(dbConf), gormConfig)
 	if err != nil {
-		panic(fmt.Errorf("open gorm db: %w", err))
+		return nil, fmt.Errorf("open gorm db: %w", err)
 	}
 	if dbConf.DbMode {
 		db = db.Debug()
 	}
 	if len(dbConf.Slave) > 0 {
-		// 注册读写分离连接池
 		if err := connectRWDB(dbConf, db); err != nil {
-			panic(fmt.Errorf("connect read write db: %w", err))
+			return nil, fmt.Errorf("connect read write db: %w", err)
 		}
-		return db
+		return db, nil
 	}
-	// 初始化单节点连接池
 	if err := connectDB(dbConf, db); err != nil {
-		panic(fmt.Errorf("connect db: %w", err))
+		return nil, fmt.Errorf("connect db: %w", err)
 	}
-	return db
+	return db, nil
 }
 
 // connectDB 初始化单节点数据库连接池

@@ -18,33 +18,82 @@ import (
 
 var tracer = otel.Tracer("default_tracer")
 
+// Config 定义 tracing 初始化配置
+type Config struct {
+	ServiceName string         `yaml:"service_name" json:"service_name"`
+	Sampler     SamplerConfig  `yaml:"sampler" json:"sampler"`
+	Reporter    ReporterConfig `yaml:"reporter" json:"reporter"`
+}
+
+// SamplerConfig 定义 tracing 采样配置
+type SamplerConfig struct {
+	Type  string  `yaml:"type" json:"type"`
+	Param float64 `yaml:"param" json:"param"`
+}
+
+// ReporterConfig 定义 tracing 上报配置
+type ReporterConfig struct {
+	CollectorEndpoint string `yaml:"collector_endpoint" json:"collector_endpoint"`
+}
+
+// InitProvider 根据配置初始化 tracing provider
+func InitProvider(cfg Config) (func(ctx context.Context) error, error) {
+	if cfg.Reporter.CollectorEndpoint == "" {
+		return func(context.Context) error { return nil }, nil
+	}
+	serviceName := cfg.ServiceName
+	if serviceName == "" {
+		serviceName = "default_tracer"
+	}
+	exporter, err := jaeger.New(jaeger.WithCollectorEndpoint(jaeger.WithEndpoint(cfg.Reporter.CollectorEndpoint)))
+	if err != nil {
+		return nil, fmt.Errorf("new jaeger exporter: %w", err)
+	}
+	provider := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(exporter),
+		sdktrace.WithSampler(buildSampler(cfg.Sampler)),
+		sdktrace.WithResource(resource.NewSchemaless(
+			semconv.ServiceNameKey.String(serviceName),
+		)),
+	)
+	otel.SetTracerProvider(provider)
+	tracer = otel.Tracer(serviceName)
+	b3Propagator := b3.New(b3.WithInjectEncoding(b3.B3MultipleHeader))
+	propagator := propagation.NewCompositeTextMapPropagator(
+		propagation.TraceContext{}, propagation.Baggage{}, b3Propagator,
+	)
+	otel.SetTextMapPropagator(propagator)
+	return provider.Shutdown, nil
+}
+
 // InitJaegerProvider 初始化 Jaeger 追踪器
 func InitJaegerProvider(jaegerURL, serviceName string) (func(ctx context.Context) error, error) {
 	if jaegerURL == "" {
 		panic("empty jaeger url")
 	}
+	return InitProvider(Config{
+		ServiceName: serviceName,
+		Sampler: SamplerConfig{
+			Type:  "const",
+			Param: 1,
+		},
+		Reporter: ReporterConfig{CollectorEndpoint: jaegerURL},
+	})
+}
 
-	exp, err := jaeger.New(jaeger.WithCollectorEndpoint(jaeger.WithEndpoint(jaegerURL)))
-	if err != nil {
-		return nil, err
+// buildSampler 根据配置创建 tracing 采样器
+func buildSampler(cfg SamplerConfig) sdktrace.Sampler {
+	switch cfg.Type {
+	case "const":
+		if cfg.Param <= 0 {
+			return sdktrace.NeverSample()
+		}
+		return sdktrace.AlwaysSample()
+	case "ratio":
+		return sdktrace.TraceIDRatioBased(cfg.Param)
+	default:
+		return sdktrace.AlwaysSample()
 	}
-
-	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exp),
-		sdktrace.WithResource(resource.NewSchemaless(
-			semconv.ServiceNameKey.String(serviceName),
-		)),
-	)
-	otel.SetTracerProvider(tp)
-	tracer = otel.Tracer(serviceName)
-
-	b3Propagator := b3.New(b3.WithInjectEncoding(b3.B3MultipleHeader))
-	p := propagation.NewCompositeTextMapPropagator(
-		propagation.TraceContext{}, propagation.Baggage{}, b3Propagator,
-	)
-	otel.SetTextMapPropagator(p)
-
-	return tp.Shutdown, nil
 }
 
 // Start 启动一个 span

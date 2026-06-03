@@ -3,3 +3,4 @@
 app.log
 *.log
 config.yaml
+.claud

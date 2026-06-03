@@ -63,7 +63,7 @@ var activeLogger Logger
 type Config struct {
 	Level      LevelConfig  `mapstructure:"level" json:"level" yaml:"level"`
 	Format     FormatConfig `mapstructure:"format" json:"format" yaml:"format"`
-	OutputPath string       `mapstructure:"output_path" json:"output_path" yaml:"output_path"`
+	OutputPath string       `mapstructure:"output_path" json:"logfile" yaml:"logfile"`
 }
 
 // NewLogger 创建日志实例

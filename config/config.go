@@ -5,6 +5,8 @@ import (
 	"os"
 	"sync"
 
+	"github.com/ethereal3x/apc/logger"
+	"github.com/ethereal3x/apc/tracing"
 	"gopkg.in/yaml.v3"
 )
 
@@ -14,24 +16,26 @@ var (
 )
 
 type ServerConf struct {
-	GrpcAddr    string `yaml:"grpc_addr"`
-	GatewayAddr string `yaml:"gateway_addr"`
-	Env         string `yaml:"env"`
+	GrpcAddr    string `yaml:"grpc_addr" json:"grpc_addr"`
+	GatewayAddr string `yaml:"gateway_addr" json:"gateway_addr"`
+	Env         string `yaml:"env" json:"env"`
 }
 
 type ClientConf struct {
-	Name  string   `yaml:"name"`
-	Addr  string   `yaml:"addr"`
-	Slave []string `yaml:"slave"`
+	Name  string   `yaml:"name" json:"name"`
+	Addr  string   `yaml:"addr" json:"addr"`
+	Slave []string `yaml:"slave" json:"slave"`
 }
 
 type Config struct {
-	Server     ServerConf    `yaml:"server"`
-	ClientList []*ClientConf `yaml:"client"`
-	Plugin     PluginConf    `yaml:"plugin"`
+	Server     ServerConf    `yaml:"server" json:"server"`
+	ClientList []*ClientConf `yaml:"client" json:"client"`
+	Plugin     PluginConf    `yaml:"plugin" json:"plugin"`
 }
 
 type PluginConf struct {
+	Log     logger.Config  `yaml:"log" json:"log"`
+	Tracing tracing.Config `yaml:"tracing" json:"tracing"`
 }
 
 func initConfig() {

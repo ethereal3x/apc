@@ -14,6 +14,7 @@ import (
 
 	os_runtime "runtime"
 
+	"github.com/ethereal3x/apc/config"
 	"github.com/ethereal3x/apc/logger"
 	apctracing "github.com/ethereal3x/apc/tracing"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
@@ -40,9 +41,10 @@ func (s *Server) SetAddress(address string) {
 	s.address = address
 }
 
+// NewServer 创建基础服务实例
 func NewServer(addr string) Server {
 	return Server{
-		log:     logger.NewLogger(&logger.Config{}),
+		log:     logger.NewLogger(&config.GetConf().Plugin.Log),
 		address: addr,
 	}
 }
@@ -154,7 +156,14 @@ func propagateTracing(next http.Handler) http.Handler {
 	})
 }
 
+// RunGrpcGatewayService 启动 gRPC 和 HTTP gateway 服务
 func RunGrpcGatewayService(rs *GrpcServer, hs *HttpServer) {
+	shutdownTracing := initTracingProvider()
+	defer func() {
+		if err := shutdownTracing(context.Background()); err != nil {
+			log.Printf("shutdown tracing provider failed: %v", err)
+		}
+	}()
 	if err := WritePidFile(); err != nil {
 		log.Fatalf("failed to write pid file: %v", err)
 		return
@@ -186,4 +195,13 @@ func RunGrpcGatewayService(rs *GrpcServer, hs *HttpServer) {
 	}()
 
 	serviceWaitGroup.Wait()
+}
+
+// initTracingProvider 根据配置初始化 tracing provider
+func initTracingProvider() func(context.Context) error {
+	shutdown, err := apctracing.InitProvider(config.GetConf().Plugin.Tracing)
+	if err != nil {
+		log.Fatalf("init tracing provider failed: %v", err)
+	}
+	return shutdown
 }

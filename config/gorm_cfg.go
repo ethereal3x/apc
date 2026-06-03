@@ -92,6 +92,9 @@ func parseMySQLDSN(addr string) (map[string]string, string, error) {
 
 // parsePostgreSQLDSN 解析 PostgreSQL DSN 并剥离 Gorm 自定义参数
 func parsePostgreSQLDSN(addr string) (map[string]string, string, error) {
+	if isKeyValueDSN(addr) {
+		return parsePostgreSQLKeyValueDSN(addr)
+	}
 	urlConfig, err := url.Parse(addr)
 	if err != nil {
 		return nil, "", fmt.Errorf("parse postgresql dsn: %w", err)
@@ -114,10 +117,40 @@ func parsePostgreSQLDSN(addr string) (map[string]string, string, error) {
 	return params, urlConfig.String(), nil
 }
 
+// isKeyValueDSN 判断是否为 key=value 空格分隔格式的 PostgreSQL DSN
+func isKeyValueDSN(addr string) bool {
+	return !strings.Contains(addr, "://") && strings.Contains(addr, "=")
+}
+
+// parsePostgreSQLKeyValueDSN 解析 key-value 格式的 PostgreSQL DSN
+func parsePostgreSQLKeyValueDSN(addr string) (map[string]string, string, error) {
+	pairs := strings.Fields(addr)
+	params := make(map[string]string)
+	var cleanedPairs []string
+	for _, pair := range pairs {
+		parts := strings.SplitN(pair, "=", 2)
+		if len(parts) != 2 {
+			cleanedPairs = append(cleanedPairs, pair)
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(parts[0]))
+		value := strings.TrimSpace(parts[1])
+		if _, ok := customParams[key]; ok {
+			params[key] = value
+			continue
+		}
+		cleanedPairs = append(cleanedPairs, pair)
+	}
+	return params, strings.Join(cleanedPairs, " "), nil
+}
+
 // detectDriver 识别数据库连接地址对应的驱动类型
 func detectDriver(dsn string) string {
 	lowerDSN := strings.ToLower(dsn)
 	if strings.HasPrefix(lowerDSN, "postgresql://") || strings.HasPrefix(lowerDSN, "postgres://") {
+		return DriverPostgreSql
+	}
+	if isKeyValueDSN(dsn) && strings.Contains(lowerDSN, "host=") {
 		return DriverPostgreSql
 	}
 	return DriverMysql

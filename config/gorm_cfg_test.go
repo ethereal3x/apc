@@ -74,3 +74,66 @@ func TestGenGormConfigMySQL(t *testing.T) {
 		t.Fatalf("slave dsn contains custom params: %s", gormConfig.Slave[0])
 	}
 }
+
+// TestGenGormConfigPostgreSQLKeyValue 校验 PostgreSQL key=value 格式 DSN 配置生成
+func TestGenGormConfigPostgreSQLKeyValue(t *testing.T) {
+	conf := &ClientConf{
+		Name: "posgresql",
+		Addr: "host=127.0.0.1 user=postgres password=123456 dbname=sub2api port=5432 sslmode=disable TimeZone=Asia/Shanghai",
+	}
+
+	gormConfig := GenGormConfig(conf)
+
+	if gormConfig.Driver != DriverPostgreSql {
+		t.Fatalf("expected driver %s, got %s", DriverPostgreSql, gormConfig.Driver)
+	}
+	if strings.Contains(gormConfig.Master, "debug=") || strings.Contains(gormConfig.Master, "max_idle=") {
+		t.Fatalf("master dsn contains unexpected custom params: %s", gormConfig.Master)
+	}
+	if !strings.Contains(gormConfig.Master, "host=") {
+		t.Fatalf("master dsn lost host param: %s", gormConfig.Master)
+	}
+	if !strings.Contains(gormConfig.Master, "dbname=") {
+		t.Fatalf("master dsn lost dbname param: %s", gormConfig.Master)
+	}
+	if !strings.Contains(gormConfig.Master, "sslmode=disable") {
+		t.Fatalf("master dsn lost sslmode param: %s", gormConfig.Master)
+	}
+	t.Logf("PostgreSQL key-value DSN: %s", gormConfig.Master)
+}
+
+// TestGenGormConfigPostgreSQLKeyValueWithCustomParams 校验带自定义参数的 key-value DSN
+func TestGenGormConfigPostgreSQLKeyValueWithCustomParams(t *testing.T) {
+	conf := &ClientConf{
+		Name: "posgresql",
+		Addr: "host=127.0.0.1 user=postgres password=123456 dbname=test port=5432 sslmode=disable debug=true max_idle=10 max_active=20 max_lifetime=120",
+	}
+
+	gormConfig := GenGormConfig(conf)
+
+	if gormConfig.Driver != DriverPostgreSql {
+		t.Fatalf("expected driver %s, got %s", DriverPostgreSql, gormConfig.Driver)
+	}
+	if !gormConfig.DbMode {
+		t.Fatal("expected debug mode enabled")
+	}
+	if gormConfig.MaxIdle != 10 || gormConfig.MaxActive != 20 || gormConfig.MaxLeftTime != 120 {
+		t.Fatalf("unexpected pool config: %+v", gormConfig)
+	}
+	if strings.Contains(gormConfig.Master, "debug=") {
+		t.Fatalf("master dsn contains debug param: %s", gormConfig.Master)
+	}
+	if strings.Contains(gormConfig.Master, "max_idle=") {
+		t.Fatalf("master dsn contains max_idle param: %s", gormConfig.Master)
+	}
+	if strings.Contains(gormConfig.Master, "max_active=") {
+		t.Fatalf("master dsn contains max_active param: %s", gormConfig.Master)
+	}
+	if !strings.Contains(gormConfig.Master, "host=") {
+		t.Fatalf("master dsn lost host param: %s", gormConfig.Master)
+	}
+	if !strings.Contains(gormConfig.Master, "dbname=") {
+		t.Fatalf("master dsn lost dbname param: %s", gormConfig.Master)
+	}
+	t.Logf("cleaned PostgreSQL key-value DSN: %s", gormConfig.Master)
+}
