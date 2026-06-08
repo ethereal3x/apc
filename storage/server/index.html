@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>APC Multipart Upload</title>
+<style>
+:root{color-scheme:light;--bg:#f5f6f8;--panel:#fff;--line:#d8dee7;--text:#1f2328;--muted:#626d7a;--blue:#2563eb;--red:#dc2626;--green:#12805c}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+main{max-width:980px;margin:28px auto;padding:0 18px}
+.shell{background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px 18px;border-bottom:1px solid var(--line)}
+h1{font-size:18px;line-height:24px;margin:0;font-weight:650}
+.status{font-size:13px;color:var(--muted)}
+.content{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:18px;padding:18px}
+.drop{display:grid;place-items:center;min-height:210px;border:1px dashed #aeb8c5;border-radius:8px;background:#fbfcfe;cursor:pointer;text-align:center;padding:24px}
+.drop strong{display:block;font-size:16px;margin-bottom:8px}
+.drop span{color:var(--muted)}
+.controls{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px}
+button{height:36px;border:1px solid var(--line);border-radius:7px;background:#fff;color:var(--text);padding:0 14px;cursor:pointer;font-weight:600}
+button.primary{background:var(--blue);border-color:var(--blue);color:#fff}
+button.danger{background:var(--red);border-color:var(--red);color:#fff}
+button:disabled{opacity:.45;cursor:not-allowed}
+.meter{margin-top:18px}
+progress{width:100%;height:16px;accent-color:var(--blue)}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px}
+.stat{border:1px solid var(--line);border-radius:7px;padding:10px;background:#fff}
+.stat label{display:block;color:var(--muted);font-size:12px;margin-bottom:4px}
+.stat b{display:block;font-size:16px;font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+aside{border-left:1px solid var(--line);padding-left:18px}
+.field{margin-bottom:12px}
+.field label{display:block;color:var(--muted);font-size:12px;margin-bottom:5px}
+input[type="number"],select{width:100%;height:34px;border:1px solid var(--line);border-radius:7px;padding:0 10px;background:#fff;color:var(--text)}
+pre{height:360px;margin:18px 0 0;overflow:auto;border:1px solid #111827;background:#111827;color:#d1d5db;border-radius:7px;padding:12px;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+a{color:var(--blue);word-break:break-all}
+.ok{color:var(--green)}
+.err{color:var(--red)}
+@media (max-width:760px){.content{grid-template-columns:1fr}aside{border-left:0;border-top:1px solid var(--line);padding-left:0;padding-top:18px}.stats{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<main>
+  <section class="shell">
+    <header>
+      <h1>APC Multipart Upload</h1>
+      <div id="state" class="status">idle</div>
+    </header>
+    <div class="content">
+      <section>
+        <label class="drop" for="fileInput">
+          <input id="fileInput" type="file" hidden>
+          <div>
+            <strong id="fileName">Select a file</strong>
+            <span id="fileMeta">No file selected</span>
+          </div>
+        </label>
+        <div class="controls">
+          <button id="startButton" class="primary">Start</button>
+          <button id="progressButton">Query</button>
+          <button id="cancelButton" class="danger">Cancel</button>
+        </div>
+        <div class="meter">
+          <progress id="progressBar" value="0" max="100"></progress>
+          <div class="stats">
+            <div class="stat"><label>Progress</label><b id="percentText">0.00%</b></div>
+            <div class="stat"><label>Uploaded</label><b id="uploadedText">0 B</b></div>
+            <div class="stat"><label>Parts</label><b id="partText">0</b></div>
+          </div>
+        </div>
+        <pre id="log"></pre>
+      </section>
+      <aside>
+        <div class="field">
+          <label for="providerSelect">Storage provider</label>
+          <select id="providerSelect">
+            <option value="minio">MinIO</option>
+            <option value="rustfs">RustFS</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="partSizeInput">Part size MiB</label>
+          <input id="partSizeInput" type="number" min="5" max="512" step="1" value="8">
+        </div>
+        <div class="field">
+          <label>Active provider</label>
+          <div id="providerText">-</div>
+        </div>
+        <div class="field">
+          <label>Upload ID</label>
+          <div id="uploadIdText">-</div>
+        </div>
+        <div class="field">
+          <label>Object</label>
+          <div id="objectText">-</div>
+        </div>
+        <div class="field">
+          <label>Public URL</label>
+          <div id="publicUrlText">-</div>
+        </div>
+        <div class="field">
+          <label>Presigned URL 24h</label>
+          <div id="presignedUrlText">-</div>
+        </div>
+      </aside>
+    </div>
+  </section>
+</main>
+<script>
+const fileInput = document.getElementById("fileInput");
+const fileName = document.getElementById("fileName");
+const fileMeta = document.getElementById("fileMeta");
+const startButton = document.getElementById("startButton");
+const progressButton = document.getElementById("progressButton");
+const cancelButton = document.getElementById("cancelButton");
+const providerSelect = document.getElementById("providerSelect");
+const partSizeInput = document.getElementById("partSizeInput");
+const progressBar = document.getElementById("progressBar");
+const percentText = document.getElementById("percentText");
+const uploadedText = document.getElementById("uploadedText");
+const partText = document.getElementById("partText");
+const providerText = document.getElementById("providerText");
+const uploadIdText = document.getElementById("uploadIdText");
+const objectText = document.getElementById("objectText");
+const publicUrlText = document.getElementById("publicUrlText");
+const presignedUrlText = document.getElementById("presignedUrlText");
+const state = document.getElementById("state");
+const logBox = document.getElementById("log");
+let uploadId = "";
+let abortController = null;
+let uploadedParts = 0;
+
+function setBusy(isBusy) {
+  startButton.disabled = isBusy;
+  cancelButton.disabled = !isBusy || !uploadId;
+  progressButton.disabled = !uploadId;
+  providerSelect.disabled = isBusy;
+  partSizeInput.disabled = isBusy;
+}
+
+function log(line, className) {
+  const prefix = className ? "[" + className.toUpperCase() + "] " : "";
+  logBox.textContent += prefix + line + "\n";
+  logBox.scrollTop = logBox.scrollHeight;
+}
+
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KiB", "MiB", "GiB"];
+  let value = bytes;
+  let index = 0;
+  while (value >= 1024 && index < units.length - 1) {
+    value = value / 1024;
+    index++;
+  }
+  return value.toFixed(index === 0 ? 0 : 2) + " " + units[index];
+}
+
+function setProgress(progress) {
+  const percent = progress && Number.isFinite(progress.percent) ? progress.percent : 0;
+  const uploadedSize = progress && Number.isFinite(progress.uploaded_size) ? progress.uploaded_size : 0;
+  progressBar.value = percent;
+  percentText.textContent = percent.toFixed(2) + "%";
+  uploadedText.textContent = formatBytes(uploadedSize);
+  partText.textContent = String(uploadedParts);
+}
+
+async function postJSON(url, data) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(data || {})
+  });
+  const result = await response.json();
+  if (!response.ok || !result.ok) throw new Error(result.error || response.statusText);
+  return result;
+}
+
+async function loadConfig() {
+  try {
+    const response = await fetch("/api/config");
+    const result = await response.json();
+    if (!response.ok || !result.ok || !result.default) return;
+    providerSelect.value = result.default;
+    providerText.textContent = result.default;
+  } catch (err) {
+    log("load config failed: " + err.message, "err");
+  }
+}
+
+fileInput.addEventListener("change", () => {
+  const file = fileInput.files[0];
+  if (!file) return;
+  fileName.textContent = file.name;
+  fileMeta.textContent = formatBytes(file.size) + " · " + (file.type || "application/octet-stream");
+});
+
+startButton.addEventListener("click", async () => {
+  const file = fileInput.files[0];
+  if (!file) {
+    log("select a file first", "err");
+    return;
+  }
+  logBox.textContent = "";
+  uploadId = "";
+  uploadedParts = 0;
+  providerText.textContent = "-";
+  publicUrlText.textContent = "-";
+  presignedUrlText.textContent = "-";
+  abortController = new AbortController();
+  setBusy(true);
+  state.textContent = "uploading";
+  try {
+    const init = await postJSON("/api/init", {
+      file_name: file.name,
+      total_size: file.size,
+      content_type: file.type || "application/octet-stream",
+      provider: providerSelect.value
+    });
+    uploadId = init.upload_id;
+    providerText.textContent = init.provider || providerSelect.value;
+    uploadIdText.textContent = uploadId;
+    objectText.textContent = init.object_name;
+    setBusy(true);
+    log("init provider=" + (init.provider || providerSelect.value) + " object=" + init.object_name, "ok");
+
+    const partSize = Number(partSizeInput.value) * 1024 * 1024;
+    for (let offset = 0, partNumber = 1; offset < file.size; offset += partSize, partNumber++) {
+      const chunk = file.slice(offset, Math.min(offset + partSize, file.size));
+      const response = await fetch("/api/part?upload_id=" + encodeURIComponent(uploadId) + "&part_number=" + partNumber, {
+        method: "POST",
+        body: chunk,
+        signal: abortController.signal
+      });
+      const result = await response.json();
+      if (!response.ok || !result.ok) throw new Error(result.error || response.statusText);
+      uploadedParts++;
+      setProgress(result.progress);
+      log("part=" + result.part.part_number + " size=" + result.part.size + " etag=" + result.part.etag);
+    }
+
+    log("complete start parts=" + uploadedParts);
+    const complete = await postJSON("/api/complete?upload_id=" + encodeURIComponent(uploadId), {});
+    progressBar.value = 100;
+    percentText.textContent = "100.00%";
+    publicUrlText.innerHTML = complete.public_url ? '<a href="' + complete.public_url + '" target="_blank">open</a>' : "-";
+    presignedUrlText.innerHTML = complete.presigned_url ? '<a href="' + complete.presigned_url + '" target="_blank">open</a>' : "-";
+    state.textContent = "complete";
+    providerText.textContent = complete.provider || providerText.textContent;
+    log("complete ok provider=" + (complete.provider || providerText.textContent) + " object=" + complete.object_name, "ok");
+    if (complete.public_url) log("public_url=" + complete.public_url);
+    if (complete.presigned_url) log("presigned_get_url_24h=" + complete.presigned_url);
+  } catch (err) {
+    state.textContent = "error";
+    log(err.message, "err");
+  } finally {
+    setBusy(false);
+  }
+});
+
+progressButton.addEventListener("click", async () => {
+  if (!uploadId) return;
+  try {
+    const result = await fetch("/api/progress?upload_id=" + encodeURIComponent(uploadId));
+    const json = await result.json();
+    if (!result.ok || !json.ok) throw new Error(json.error || result.statusText);
+    uploadedParts = json.progress.uploaded_parts ? json.progress.uploaded_parts.length : uploadedParts;
+    setProgress(json.progress);
+    log("server progress uploaded=" + json.progress.uploaded_size + " percent=" + json.progress.percent.toFixed(2));
+  } catch (err) {
+    log(err.message, "err");
+  }
+});
+
+cancelButton.addEventListener("click", async () => {
+  if (abortController) abortController.abort();
+  if (!uploadId) return;
+  try {
+    await postJSON("/api/cancel?upload_id=" + encodeURIComponent(uploadId), {});
+    state.textContent = "canceled";
+    log("cancel ok", "ok");
+  } catch (err) {
+    log(err.message, "err");
+  } finally {
+    setBusy(false);
+  }
+});
+
+setBusy(false);
+loadConfig();
+</script>
+</body>
+</html>

@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/ethereal3x/apc/logger"
+	"github.com/ethereal3x/apc/storage"
 	"github.com/ethereal3x/apc/tracing"
 	"gopkg.in/yaml.v3"
 )
@@ -36,6 +37,8 @@ type Config struct {
 type PluginConf struct {
 	Log     logger.Config  `yaml:"log" json:"log"`
 	Tracing tracing.Config `yaml:"tracing" json:"tracing"`
+	Minio   storage.Config `yaml:"minio" json:"minio"`
+	RustFS  storage.Config `yaml:"rustfs" json:"rustfs"`
 }
 
 func initConfig() {

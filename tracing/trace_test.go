@@ -6,14 +6,20 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
-	"google.golang.org/grpc"
 )
 
-func TestInitJaegerProvider(t *testing.T) {
-	// 使用本地 Jaeger Collector 地址
-	shutdown, err := InitJaegerProvider("http://localhost:14268/api/traces", "test-service")
+func TestInitProvider(t *testing.T) {
+	// 使用本地 OTLP HTTP Collector 地址
+	shutdown, err := InitProvider(Config{
+		ServiceName: "test-service",
+		Sampler: SamplerConfig{
+			Type:  "const",
+			Param: 1,
+		},
+		Reporter: ReporterConfig{CollectorEndpoint: "http://localhost:4318/v1/traces"},
+	})
 	if err != nil {
-		t.Fatalf("初始化 Jaeger Provider 失败: %v", err)
+		t.Fatalf("初始化 OTLP Provider 失败: %v", err)
 	}
 	defer func() {
 		if err := shutdown(context.Background()); err != nil {
@@ -52,29 +58,4 @@ func TestInitJaegerProvider(t *testing.T) {
 		t.Error("otel 全局 tracer 未初始化")
 	}
 	t.Log("tracing 初始化、span 嵌套、TraceID 校验均通过")
-}
-
-func TracingUnaryInterceptor() grpc.UnaryServerInterceptor {
-	return func(
-		ctx context.Context,
-		req interface{},
-		info *grpc.UnaryServerInfo,
-		handler grpc.UnaryHandler,
-	) (interface{}, error) {
-		// 从 ctx 中创建 span
-		ctx, span := Start(ctx, info.FullMethod)
-		defer span.End()
-
-		// 调用实际处理函数
-		resp, err := handler(ctx, req)
-		if err != nil {
-			RecordError(ctx, err)
-		}
-		return resp, err
-	}
-	/**
-	server := grpc.NewServer(
-		grpc.UnaryInterceptor(TracingUnaryInterceptor()),
-	)
-	*/
 }

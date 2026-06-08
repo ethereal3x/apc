@@ -2,13 +2,13 @@ package tracing
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"net/url"
 
 	"go.opentelemetry.io/contrib/propagators/b3"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/exporters/jaeger"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -45,9 +45,9 @@ func InitProvider(cfg Config) (func(ctx context.Context) error, error) {
 	if serviceName == "" {
 		serviceName = "default_tracer"
 	}
-	exporter, err := jaeger.New(jaeger.WithCollectorEndpoint(jaeger.WithEndpoint(cfg.Reporter.CollectorEndpoint)))
+	exporter, err := newOTLPTraceHTTPExporter(context.Background(), cfg.Reporter.CollectorEndpoint)
 	if err != nil {
-		return nil, fmt.Errorf("new jaeger exporter: %w", err)
+		return nil, fmt.Errorf("new otlp trace http exporter: %w", err)
 	}
 	provider := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exporter),
@@ -66,19 +66,25 @@ func InitProvider(cfg Config) (func(ctx context.Context) error, error) {
 	return provider.Shutdown, nil
 }
 
-// InitJaegerProvider 初始化 Jaeger 追踪器
-func InitJaegerProvider(jaegerURL, serviceName string) (func(ctx context.Context) error, error) {
-	if jaegerURL == "" {
-		panic("empty jaeger url")
+// newOTLPTraceHTTPExporter 创建 OTLP HTTP trace exporter
+func newOTLPTraceHTTPExporter(ctx context.Context, endpoint string) (sdktrace.SpanExporter, error) {
+	exporter, err := otlptracehttp.New(ctx, buildOTLPTraceHTTPOptions(endpoint)...)
+	if err != nil {
+		return nil, err
 	}
-	return InitProvider(Config{
-		ServiceName: serviceName,
-		Sampler: SamplerConfig{
-			Type:  "const",
-			Param: 1,
-		},
-		Reporter: ReporterConfig{CollectorEndpoint: jaegerURL},
-	})
+	return exporter, nil
+}
+
+// buildOTLPTraceHTTPOptions 构造 OTLP HTTP exporter 连接选项
+func buildOTLPTraceHTTPOptions(endpoint string) []otlptracehttp.Option {
+	parsedURL, err := url.Parse(endpoint)
+	if err == nil && parsedURL.Scheme != "" {
+		return []otlptracehttp.Option{otlptracehttp.WithEndpointURL(endpoint)}
+	}
+	return []otlptracehttp.Option{
+		otlptracehttp.WithEndpoint(endpoint),
+		otlptracehttp.WithInsecure(),
+	}
 }
 
 // buildSampler 根据配置创建 tracing 采样器
@@ -124,26 +130,4 @@ func RecordError(ctx context.Context, err error) {
 	}
 	span.RecordError(err)
 	span.SetStatus(codes.Error, err.Error())
-}
-
-// Must 会捕获 panic 并转为错误上报到 tracing
-func Must(ctx context.Context, fn func() error) (err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			var e error
-			switch x := r.(type) {
-			case error:
-				e = x
-			default:
-				e = errors.New(fmt.Sprintf("%v", x))
-			}
-			RecordError(ctx, e)
-			err = e
-		}
-	}()
-	err = fn()
-	if err != nil {
-		RecordError(ctx, err)
-	}
-	return err
 }

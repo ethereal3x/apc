@@ -13,17 +13,17 @@ import (
 	"go.uber.org/zap"
 )
 
-// TestLoggerWithJaegerTrace 验证 logger 搭配 Jaeger 记录正常调用链
-func TestLoggerWithJaegerTrace(t *testing.T) {
-	shutdown := initTestJaeger(t)
-	defer shutdownTestJaeger(t, shutdown)
-	logPath := filepath.Join("./", "jaeger.log")
+// TestLoggerWithOTLPTrace 验证 logger 搭配 OTLP tracing 记录正常调用链
+func TestLoggerWithOTLPTrace(t *testing.T) {
+	shutdown := initTestOTLP(t)
+	defer shutdownTestOTLP(t, shutdown)
+	logPath := filepath.Join("./", "otlp.log")
 	SetLogger(NewLogger(&Config{
 		Level:      LevelInfo,
 		Format:     FormatJSON,
 		OutputPath: logPath,
 	}))
-	ctx, span := tracing.Start(context.Background(), "jaeger-root")
+	ctx, span := tracing.Start(context.Background(), "otlp-root")
 	defer span.End()
 
 	records, err := traceMethodA(ctx, false)
@@ -31,20 +31,20 @@ func TestLoggerWithJaegerTrace(t *testing.T) {
 	require.NoError(t, Sync())
 	assertTracingRecords(t, records)
 	assertLogContains(t, logPath, records[0].traceID)
-	t.Logf("jaeger trace_id=%s", records[0].traceID)
+	t.Logf("otlp trace_id=%s", records[0].traceID)
 }
 
-// TestLoggerWithJaegerError 验证 logger 搭配 Jaeger 记录错误调用链
-func TestLoggerWithJaegerError(t *testing.T) {
-	shutdown := initTestJaeger(t)
-	defer shutdownTestJaeger(t, shutdown)
-	logPath := filepath.Join("./", "jaeger-error.log")
+// TestLoggerWithOTLPError 验证 logger 搭配 OTLP tracing 记录错误调用链
+func TestLoggerWithOTLPError(t *testing.T) {
+	shutdown := initTestOTLP(t)
+	defer shutdownTestOTLP(t, shutdown)
+	logPath := filepath.Join("./", "otlp-error.log")
 	SetLogger(NewLogger(&Config{
 		Level:      LevelInfo,
 		Format:     FormatJSON,
 		OutputPath: logPath,
 	}))
-	ctx, span := tracing.Start(context.Background(), "jaeger-error-root")
+	ctx, span := tracing.Start(context.Background(), "otlp-error-root")
 	defer span.End()
 
 	records, err := traceMethodA(ctx, true)
@@ -52,7 +52,7 @@ func TestLoggerWithJaegerError(t *testing.T) {
 	require.NoError(t, Sync())
 	assertTracingRecords(t, records)
 	assertLogContains(t, logPath, err.Error())
-	t.Logf("jaeger error trace_id=%s error=%s", records[0].traceID, err.Error())
+	t.Logf("otlp error trace_id=%s error=%s", records[0].traceID, err.Error())
 }
 
 type tracingRecord struct {
@@ -113,16 +113,23 @@ func newTracingRecord(methodName string, ctx context.Context) tracingRecord {
 	}
 }
 
-// initTestJaeger 初始化测试用 Jaeger provider
-func initTestJaeger(t *testing.T) func(context.Context) error {
+// initTestOTLP 初始化测试用 OTLP provider
+func initTestOTLP(t *testing.T) func(context.Context) error {
 	t.Helper()
-	shutdown, err := tracing.InitJaegerProvider("http://localhost:14268/api/traces", "apc-logger-test")
+	shutdown, err := tracing.InitProvider(tracing.Config{
+		ServiceName: "apc-logger-test",
+		Sampler: tracing.SamplerConfig{
+			Type:  "const",
+			Param: 1,
+		},
+		Reporter: tracing.ReporterConfig{CollectorEndpoint: "http://localhost:4318/v1/traces"},
+	})
 	require.NoError(t, err)
 	return shutdown
 }
 
-// shutdownTestJaeger 关闭测试用 Jaeger provider
-func shutdownTestJaeger(t *testing.T, shutdown func(context.Context) error) {
+// shutdownTestOTLP 关闭测试用 OTLP provider
+func shutdownTestOTLP(t *testing.T, shutdown func(context.Context) error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
