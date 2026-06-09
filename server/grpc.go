@@ -28,8 +28,9 @@ func (s *GrpcServer) SetInterceptors(streamInterceptors []grpc.StreamServerInter
 	s.unaryInterceptors = append(s.unaryInterceptors, unaryInterceptors...)
 }
 
-func (s *GrpcServer) RegisterFunction(server *grpc.Server) {
-	s.registerFunction(server)
+// SetRegisterFunction 设置 gRPC 服务注册回调函数
+func (s *GrpcServer) SetRegisterFunction(fn func(*grpc.Server)) {
+	s.registerFunction = fn
 }
 
 func (s *GrpcServer) genServerOptions() ([]grpc.StreamServerInterceptor, []grpc.UnaryServerInterceptor) {
