@@ -41,6 +41,11 @@ func (s *Server) SetAddress(address string) {
 	s.address = address
 }
 
+// SetLogger 设置自定义 logger 实例
+func (s *Server) SetLogger(log logger.Logger) {
+	s.log = log
+}
+
 // NewServer 创建基础服务实例
 func NewServer(addr string) Server {
 	return Server{
