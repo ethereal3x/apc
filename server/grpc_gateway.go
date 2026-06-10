@@ -11,10 +11,13 @@ import (
 	"go.uber.org/zap"
 )
 
+const defaultWriteTimeout = 15 * time.Second
+
 type HttpServer struct {
 	Server
 	serveMuxOptions  []runtime.ServeMuxOption
 	registerFunction func(context.Context, *runtime.ServeMux) error
+	writeTimeout     time.Duration
 }
 
 func (s *HttpServer) SetRegisterFunc(registerFunc func(context.Context, *runtime.ServeMux) error) {
@@ -25,10 +28,16 @@ func (s *HttpServer) SetServeMuxOpts(opts []runtime.ServeMuxOption) {
 	s.serveMuxOptions = opts
 }
 
+// SetWriteTimeout 设置 HTTP 写超时，0 表示不限制（用于流式响应）
+func (s *HttpServer) SetWriteTimeout(d time.Duration) {
+	s.writeTimeout = d
+}
+
 func NewHttpServer() *HttpServer {
 	return &HttpServer{
 		Server:          NewServer(config.GetConf().Server.GatewayAddr),
 		serveMuxOptions: []runtime.ServeMuxOption{},
+		writeTimeout:    defaultWriteTimeout,
 	}
 }
 
@@ -46,7 +55,7 @@ func (s *HttpServer) run(ctx context.Context) {
 		Addr:              s.address,
 		Handler:           recovery(allowCORS(propagateTracing(mux))),
 		ReadHeaderTimeout: 15 * time.Second,
-		WriteTimeout:      15 * time.Second,
+		WriteTimeout:      s.writeTimeout,
 	}
 
 	go func() {
