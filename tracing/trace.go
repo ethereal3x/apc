@@ -16,7 +16,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-var tracer = otel.Tracer("default_tracer")
+var tracerName = "default_tracer"
 
 // Config 定义 tracing 初始化配置
 type Config struct {
@@ -57,7 +57,7 @@ func InitProvider(cfg Config) (func(ctx context.Context) error, error) {
 		)),
 	)
 	otel.SetTracerProvider(provider)
-	tracer = otel.Tracer(serviceName)
+	tracerName = serviceName
 	b3Propagator := b3.New(b3.WithInjectEncoding(b3.B3MultipleHeader))
 	propagator := propagation.NewCompositeTextMapPropagator(
 		propagation.TraceContext{}, propagation.Baggage{}, b3Propagator,
@@ -102,9 +102,9 @@ func buildSampler(cfg SamplerConfig) sdktrace.Sampler {
 	}
 }
 
-// Start 启动一个 span
+// Start 启动一个 span，始终从当前全局 tracer provider 获取 tracer
 func Start(ctx context.Context, name string) (context.Context, trace.Span) {
-	return tracer.Start(ctx, name)
+	return otel.Tracer(tracerName).Start(ctx, name)
 }
 
 // TraceID 获取 TraceID

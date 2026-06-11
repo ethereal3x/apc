@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net"
+	"sync"
 
 	"github.com/ethereal3x/apc/config"
 	grpc_recovery "github.com/grpc-ecosystem/go-grpc-middleware/recovery"
@@ -56,7 +57,9 @@ func NewRpcServer() *GrpcServer {
 	}
 }
 
-func (s *GrpcServer) run(ctx context.Context) {
+// run 启动 gRPC 服务并监听 ctx 取消信号执行优雅关闭
+func (s *GrpcServer) run(ctx context.Context, wg *sync.WaitGroup) {
+	defer wg.Done()
 	sock, err := net.Listen("tcp", s.address)
 	if err != nil {
 		log.Fatalf("rpc start to listen error: %v", err)
@@ -73,10 +76,9 @@ func (s *GrpcServer) run(ctx context.Context) {
 	}
 
 	go func() {
-		<-rsServiceQuit
+		<-ctx.Done()
 		s.log.ContextInfo(ctx, "rpc service quit")
 		server.GracefulStop()
-		serviceWaitGroup.Done()
 	}()
 
 	_ = server.Serve(sock)

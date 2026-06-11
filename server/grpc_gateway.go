@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/ethereal3x/apc/config"
@@ -41,8 +42,9 @@ func NewHttpServer() *HttpServer {
 	}
 }
 
-// run 初始化 HTTP gateway mux 并注册服务路由
-func (s *HttpServer) run(ctx context.Context) {
+// run 初始化 HTTP gateway mux 并注册服务路由，监听 ctx 取消信号优雅关闭
+func (s *HttpServer) run(ctx context.Context, wg *sync.WaitGroup) {
+	defer wg.Done()
 	mux := runtime.NewServeMux(
 		append(s.serveMuxOptions, propagateTracingMetadata(), generateFrameworkMetadata(), setMarshalerOption())...)
 	if s.registerFunction != nil {
@@ -59,10 +61,9 @@ func (s *HttpServer) run(ctx context.Context) {
 	}
 
 	go func() {
-		<-hsServiceQuit
+		<-ctx.Done()
 		s.log.Info("gateway.Shutdown now")
-		_ = hs.Shutdown(ctx)
-		serviceWaitGroup.Done()
+		_ = hs.Shutdown(context.Background())
 	}()
 
 	if err := hs.ListenAndServe(); err != nil {

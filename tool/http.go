@@ -13,9 +13,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/opentracing/opentracing-go"
-	"github.com/opentracing/opentracing-go/log"
+	apctracing "github.com/ethereal3x/apc/tracing"
 	"github.com/spf13/cast"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type HttpClient struct {
@@ -30,7 +32,7 @@ type HttpClient struct {
 	Error        error
 	EnableTrace  bool
 	tracerName   string
-	span         opentracing.Span
+	span         trace.Span
 	spanFinished bool
 }
 
@@ -101,10 +103,12 @@ func (c *HttpClient) Request() (*http.Response, error) {
 	}
 
 	duration := time.Since(startTime)
-	c.span.SetTag("http.duration_ms", duration.Milliseconds())
+	c.span.SetAttributes(attribute.Int64("http.duration_ms", duration.Milliseconds()))
 	if resp != nil {
-		c.span.SetTag("http.status_code", resp.StatusCode)
-		c.span.SetTag("http.response_size", resp.ContentLength)
+		c.span.SetAttributes(
+			attribute.Int("http.status_code", resp.StatusCode),
+			attribute.Int64("http.response_size", resp.ContentLength),
+		)
 	}
 	if err != nil {
 		c.logError("client_request_error", err)
@@ -243,10 +247,14 @@ func (c *HttpClient) UnmarshalBody(resp *http.Response, out interface{}) (err er
 	if c.span == nil {
 		return nil
 	}
-	c.span.LogFields(log.Object("response_body", out))
+	responseJSON, marshalErr := json.Marshal(out)
+	if marshalErr == nil {
+		c.span.AddEvent("response_body", trace.WithAttributes(attribute.String("body", string(responseJSON))))
+	}
 	return nil
 }
 
+// startSpanFromContext 从 context 创建 HTTP 请求 tracing span 并设置属性
 func (c *HttpClient) startSpanFromContext() {
 	if !c.EnableTrace {
 		return
@@ -254,29 +262,25 @@ func (c *HttpClient) startSpanFromContext() {
 	if len(c.tracerName) == 0 {
 		c.tracerName = fmt.Sprintf("%s %s", c.Method, c.Url)
 	}
-	c.span, c.Ctx = opentracing.StartSpanFromContext(c.Ctx, c.tracerName)
+	c.Ctx, c.span = apctracing.Start(c.Ctx, c.tracerName)
 	c.spanFinished = false
 
-	c.span.SetTag("http.method", c.Method)
-	c.span.SetTag("http.url", c.Url)
-	c.span.SetTag("component", "apc-http-client")
-
-	c.span.LogFields(
-		log.String("http.method", c.Method),
-		log.String("http.url", c.Url),
+	c.span.SetAttributes(
+		attribute.String("http.method", c.Method),
+		attribute.String("http.url", c.Url),
+		attribute.String("component", "apc-http-client"),
 	)
-	// 只在有数据时记录
 	if len(c.Headers) > 0 {
-		c.span.LogFields(log.Object("http.headers", c.Headers))
+		c.span.AddEvent("http.headers", trace.WithAttributes(attribute.String("headers", fmt.Sprintf("%v", c.Headers))))
 	}
 	if len(c.QueryParams) > 0 {
-		c.span.LogFields(log.Object("http.query_params", c.QueryParams))
+		c.span.AddEvent("http.query_params", trace.WithAttributes(attribute.String("params", fmt.Sprintf("%v", c.QueryParams))))
 	}
 	if len(c.FormParams) > 0 {
-		c.span.LogFields(log.Object("http.form_data", c.FormParams))
+		c.span.AddEvent("http.form_data", trace.WithAttributes(attribute.String("params", fmt.Sprintf("%v", c.FormParams))))
 	}
 	if c.Body != nil {
-		c.span.LogFields(log.Object("http.request_body", c.Body))
+		c.span.AddEvent("http.request_body", trace.WithAttributes(attribute.String("body", fmt.Sprintf("%v", c.Body))))
 	}
 }
 
@@ -285,9 +289,12 @@ func (c *HttpClient) logError(errorType string, err error) {
 	if c.span == nil || err == nil {
 		return
 	}
-	c.span.SetTag("http.error_type", errorType)
-	c.span.SetTag("error", true)
-	c.span.LogFields(log.Error(err))
+	c.span.SetAttributes(
+		attribute.String("http.error_type", errorType),
+		attribute.Bool("error", true),
+	)
+	c.span.SetStatus(codes.Error, err.Error())
+	c.span.RecordError(err)
 }
 
 // finishSpan 结束 HTTP 请求 tracing span
@@ -295,6 +302,6 @@ func (c *HttpClient) finishSpan() {
 	if c.span == nil || c.spanFinished {
 		return
 	}
-	c.span.Finish()
+	c.span.End()
 	c.spanFinished = true
 }

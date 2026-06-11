@@ -26,12 +26,6 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-var (
-	serviceWaitGroup = sync.WaitGroup{}
-	hsServiceQuit    = make(chan int)
-	rsServiceQuit    = make(chan int)
-)
-
 type Server struct {
 	address string
 	log     logger.Logger
@@ -177,29 +171,27 @@ func RunGrpcGatewayService(rs *GrpcServer, hs *HttpServer) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	var sCnt = 0
+
+	var wg sync.WaitGroup
 	if rs.address != "" {
-		sCnt++
-		go rs.run(ctx)
+		wg.Add(1)
+		go rs.run(ctx, &wg)
 	}
 	if hs.address != "" {
-		sCnt++
-		go hs.run(ctx)
+		wg.Add(1)
+		go hs.run(ctx, &wg)
 	}
-
-	serviceWaitGroup.Add(sCnt)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
 		s := <-sigCh
-		hsServiceQuit <- 1
-		rsServiceQuit <- 1
 		log.Printf("ready.to.shutdown: %v", s.String())
+		cancel()
 	}()
 
-	serviceWaitGroup.Wait()
+	wg.Wait()
 }
 
 // initTracingProvider 根据配置初始化 tracing provider

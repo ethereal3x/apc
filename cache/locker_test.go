@@ -1,11 +1,13 @@
 package cache
 
 import (
+	"context"
 	"fmt"
-	"github.com/redis/go-redis/v9"
-	"github.com/stretchr/testify/assert"
 	"testing"
 	"time"
+
+	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestRedisLock(t *testing.T) {
@@ -19,7 +21,7 @@ func TestRedisLock(t *testing.T) {
 
 	// 尝试获取锁并执行任务
 	t.Run("Lock acquired successfully", func(t *testing.T) {
-		err := lock.TryLock(func() error {
+		err := lock.TryLock(context.Background(), func() error {
 			// 执行需要分布式锁保护的操作
 			fmt.Println("Lock acquired, performing task...")
 			time.Sleep(2 * time.Second) // 模拟长时间任务
@@ -33,7 +35,7 @@ func TestRedisLock(t *testing.T) {
 	t.Run("Lock acquisition failed", func(t *testing.T) {
 		// 获取另一个锁实例
 		lock2 := NewRedisLock(client, "test_lock", 3*time.Second)
-		err := lock2.TryLock(func() error {
+		err := lock2.TryLock(context.Background(), func() error {
 			t.Errorf("Should not acquire lock when it's already held")
 			return nil
 		})
@@ -42,7 +44,7 @@ func TestRedisLock(t *testing.T) {
 
 	// 手动释放锁
 	t.Run("Lock released", func(t *testing.T) {
-		err := lock.TryLock(func() error {
+		err := lock.TryLock(context.Background(), func() error {
 			// 执行需要分布式锁保护的操作
 			fmt.Println("Lock acquired, performing task...")
 			time.Sleep(1 * time.Second) // 模拟长时间任务
