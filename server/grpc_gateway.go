@@ -19,6 +19,7 @@ type HttpServer struct {
 	serveMuxOptions  []runtime.ServeMuxOption
 	registerFunction func(context.Context, *runtime.ServeMux) error
 	writeTimeout     time.Duration
+	middlewares      []func(http.Handler) http.Handler
 }
 
 func (s *HttpServer) SetRegisterFunc(registerFunc func(context.Context, *runtime.ServeMux) error) {
@@ -32,6 +33,12 @@ func (s *HttpServer) SetServeMuxOpts(opts []runtime.ServeMuxOption) {
 // SetWriteTimeout 设置 HTTP 写超时，0 表示不限制（用于流式响应）
 func (s *HttpServer) SetWriteTimeout(d time.Duration) {
 	s.writeTimeout = d
+}
+
+// SetMiddleware 设置 HTTP 中间件链，按顺序包裹在 grpc-gateway mux 外层。
+// 中间件在 recovery/CORS/tracing 之后、mux 之前执行。
+func (s *HttpServer) SetMiddleware(mws ...func(http.Handler) http.Handler) {
+	s.middlewares = append(s.middlewares, mws...)
 }
 
 func NewHttpServer() *HttpServer {
@@ -53,9 +60,14 @@ func (s *HttpServer) run(ctx context.Context, wg *sync.WaitGroup) {
 		}
 	}
 
+	handler := http.Handler(mux)
+	for i := len(s.middlewares) - 1; i >= 0; i-- {
+		handler = s.middlewares[i](handler)
+	}
+
 	hs := &http.Server{
 		Addr:              s.address,
-		Handler:           recovery(allowCORS(propagateTracing(mux))),
+		Handler:           recovery(allowCORS(propagateTracing(handler))),
 		ReadHeaderTimeout: 15 * time.Second,
 		WriteTimeout:      s.writeTimeout,
 	}
