@@ -17,7 +17,6 @@ type RedisLock struct {
 	lockName    string
 	lockValue   string
 	timeout     time.Duration
-	ctx         context.Context
 	mu          sync.Mutex
 	keepAliveCh chan struct{}
 	keepAlive   bool
@@ -30,7 +29,6 @@ func NewRedisLock(client *redis.Client, lockName string, timeout time.Duration) 
 		lockName:  lockName,
 		lockValue: uuid.New().String(),
 		timeout:   timeout,
-		ctx:       context.Background(),
 	}
 }
 
@@ -115,7 +113,7 @@ func (r *RedisLock) renew() {
 		end
 	`
 	ttl := int64(r.timeout / time.Millisecond)
-	_, err := r.client.Eval(r.ctx, luaScript, []string{r.lockName}, r.lockValue, ttl).Result()
+	_, err := r.client.Eval(context.Background(), luaScript, []string{r.lockName}, r.lockValue, ttl).Result()
 	if err != nil {
 		fmt.Printf("cache: keep lock %q alive failed: %v\n", r.lockName, err)
 	}

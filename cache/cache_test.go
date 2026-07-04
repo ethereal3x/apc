@@ -16,19 +16,19 @@ func TestRedisClient(t *testing.T) {
 	})
 
 	// 创建 RedisClient 实例
-	redisClient := NewRedisClient(context.Background(), client)
+	redisClient := NewRedisClient(client)
+	ctx := context.Background()
 
 	// 测试 Set 和 Get
 	t.Run("Test Set and Get", func(t *testing.T) {
 		key := "test_key"
 		value := "test_value"
-
 		// 设置值
-		err := redisClient.Set(key, value, 10*time.Second)
+		err := redisClient.Set(ctx, key, value, 10*time.Second)
 		assert.Nil(t, err, "Should not return error while setting value")
 
 		// 获取值
-		got, err := redisClient.Get(key)
+		got, err := redisClient.Get(ctx, key)
 		assert.Nil(t, err, "Should not return error while getting value")
 		assert.Equal(t, value, got, "The value should match")
 	})
@@ -39,15 +39,15 @@ func TestRedisClient(t *testing.T) {
 		value := "to_be_deleted"
 
 		// 设置值
-		err := redisClient.Set(key, value, 10*time.Second)
+		err := redisClient.Set(ctx, key, value, 10*time.Second)
 		assert.Nil(t, err, "Should not return error while setting value")
 
 		// 删除值
-		err = redisClient.Del(key)
+		err = redisClient.Del(ctx, key)
 		assert.Nil(t, err, "Should not return error while deleting value")
 
 		// 尝试获取已删除的值
-		got, err := redisClient.Get(key)
+		got, err := redisClient.Get(ctx, key)
 		assert.Nil(t, err, "Should not return error while getting deleted value")
 		assert.Empty(t, got, "The value should be empty after deletion")
 	})
@@ -57,11 +57,11 @@ func TestRedisClient(t *testing.T) {
 		values := []interface{}{"key1", "value1", "key2", "value2"}
 
 		// 批量设置多个值
-		err := redisClient.MSet(values...)
+		err := redisClient.MSet(ctx, values...)
 		assert.Nil(t, err, "Should not return error while setting multiple values")
 
 		// 批量获取多个值
-		got, err := redisClient.MGet("key1", "key2")
+		got, err := redisClient.MGet(ctx, "key1", "key2")
 		assert.Nil(t, err, "Should not return error while getting multiple values")
 		assert.Equal(t, []interface{}{"value1", "value2"}, got, "The values should match")
 	})
@@ -72,11 +72,11 @@ func TestRedisClient(t *testing.T) {
 		value := "value_with_ttl"
 
 		// 设置带 TTL 的值
-		err := redisClient.Set(key, value, 2*time.Second)
+		err := redisClient.Set(ctx, key, value, 2*time.Second)
 		assert.Nil(t, err, "Should not return error while setting value with ttl")
 
 		// 获取 TTL
-		ttl, err := redisClient.TTL(key)
+		ttl, err := redisClient.TTL(ctx, key)
 		assert.Nil(t, err, "Should not return error while getting ttl")
 		assert.True(t, ttl <= 2*time.Second, "TTL should be less than or equal to 2 seconds")
 
@@ -84,7 +84,7 @@ func TestRedisClient(t *testing.T) {
 		time.Sleep(3 * time.Second)
 
 		// 获取值，应该为空
-		got, err := redisClient.Get(key)
+		got, err := redisClient.Get(ctx, key)
 		assert.Nil(t, err, "Should not return error while getting expired value")
 		assert.Empty(t, got, "The value should be empty after TTL expires")
 	})
@@ -95,11 +95,11 @@ func TestRedisClient(t *testing.T) {
 		value := "value_to_exist"
 
 		// 设置值
-		err := redisClient.Set(key, value, 10*time.Second)
+		err := redisClient.Set(ctx, key, value, 10*time.Second)
 		assert.Nil(t, err, "Should not return error while setting value")
 
 		// 检查 key 是否存在
-		count, err := redisClient.Exists(key)
+		count, err := redisClient.Exists(ctx, key)
 		assert.Nil(t, err, "Should not return error while checking key existence")
 		assert.Equal(t, int64(1), count, "The key should exist")
 	})
@@ -108,16 +108,16 @@ func TestRedisClient(t *testing.T) {
 	t.Run("Test Incr and Decr", func(t *testing.T) {
 		key := "test_incr_decr_key"
 		// 设置初始值
-		err := redisClient.Set(key, 0, 0)
+		err := redisClient.Set(ctx, key, 0, 0)
 		assert.Nil(t, err, "Should not return error while setting initial value")
 
 		// 自增
-		incrResult, err := redisClient.Incr(key)
+		incrResult, err := redisClient.Incr(ctx, key)
 		assert.Nil(t, err, "Should not return error while incrementing value")
 		assert.Equal(t, int64(1), incrResult, "The value should be incremented by 1")
 
 		// 自减
-		decrResult, err := redisClient.Decr(key)
+		decrResult, err := redisClient.Decr(ctx, key)
 		assert.Nil(t, err, "Should not return error while decrementing value")
 		assert.Equal(t, int64(0), decrResult, "The value should be decremented by 1")
 	})
@@ -129,11 +129,11 @@ func TestRedisClient(t *testing.T) {
 		value := "hash_value"
 
 		// 设置哈希表中的字段值
-		err := redisClient.HSet(hashKey, field, value)
+		err := redisClient.HSet(ctx, hashKey, field, value)
 		assert.Nil(t, err, "Should not return error while setting hash field")
 
 		// 获取哈希表中的字段值
-		got, err := redisClient.HGet(hashKey, field)
+		got, err := redisClient.HGet(ctx, hashKey, field)
 		assert.Nil(t, err, "Should not return error while getting hash field")
 		assert.Equal(t, value, got, "The hash field value should match")
 	})
@@ -144,12 +144,12 @@ func TestRedisClient(t *testing.T) {
 		members := []interface{}{"member1", "member2", "member3"}
 
 		// 向集合中添加元素
-		count, err := redisClient.SAdd(setKey, members...)
+		count, err := redisClient.SAdd(ctx, setKey, members...)
 		assert.Nil(t, err, "Should not return error while adding members to set")
 		assert.Equal(t, int64(3), count, "The number of added members should match")
 
 		// 获取集合中的所有元素
-		got, err := redisClient.SMembers(setKey)
+		got, err := redisClient.SMembers(ctx, setKey)
 		assert.Nil(t, err, "Should not return error while getting set members")
 		assert.ElementsMatch(t, members, got, "The set members should match")
 	})
@@ -168,21 +168,21 @@ func TestRedisClient(t *testing.T) {
 		}
 
 		// 批量添加用户 ID 到集合
-		addedCount, err := redisClient.SAdd(setKey, userIDs...)
+		addedCount, err := redisClient.SAdd(ctx, setKey, userIDs...)
 		assert.Nil(t, err, "Should not return error while adding user IDs to set")
 		assert.Equal(t, int64(count), addedCount, "The number of added user IDs should be 10000")
 
 		// 设置过期时间为 30 天
-		err = redisClient.Expire(setKey, ttl)
+		err = redisClient.Expire(ctx, setKey, ttl)
 		assert.Nil(t, err, "Should not return error while setting expiration")
 
 		// 验证过期时间是否设置成功
-		remainingTTL, err := redisClient.TTL(setKey)
+		remainingTTL, err := redisClient.TTL(ctx, setKey)
 		assert.Nil(t, err, "Should not return error while getting TTL")
 		assert.True(t, remainingTTL > 0 && remainingTTL <= ttl, "TTL should be set correctly")
 
 		// 验证集合中的元素数量
-		members, err := redisClient.SMembers(setKey)
+		members, err := redisClient.SMembers(ctx, setKey)
 		assert.Nil(t, err, "Should not return error while getting set members")
 		assert.Equal(t, count, len(members), "The set should contain 10000 members")
 	})
@@ -208,22 +208,22 @@ func TestRedisClient(t *testing.T) {
 		}
 
 		// 批量添加用户 ID 到集合
-		_, err := redisClient.SAdd(setKey, userIDs...)
+		_, err := redisClient.SAdd(ctx, setKey, userIDs...)
 		assert.Nil(t, err, "Should not return error while adding user IDs to set")
 
 		// 设置过期时间
-		err = redisClient.Expire(setKey, ttl)
+		err = redisClient.Expire(ctx, setKey, ttl)
 		assert.Nil(t, err, "Should not return error while setting expiration")
 
 		// 验证集合大小
-		cardCount, err := redisClient.SCard(setKey)
+		cardCount, err := redisClient.SCard(ctx, setKey)
 		assert.Nil(t, err, "Should not return error while getting set card")
 		assert.Equal(t, int64(count), cardCount, "The set should contain 100000 members")
 
 		// 测试查询存在的 ID（第一个）
 		testID1 := startID
 		start1 := time.Now()
-		exists1, err := redisClient.SIsMember(setKey, testID1)
+		exists1, err := redisClient.SIsMember(ctx, setKey, testID1)
 		duration1 := time.Since(start1)
 		assert.Nil(t, err, "Should not return error while checking member existence")
 		assert.True(t, exists1, "The user ID should exist in the set")
@@ -232,7 +232,7 @@ func TestRedisClient(t *testing.T) {
 		// 测试查询存在的 ID（中间）
 		testID2 := startID + count/2
 		start2 := time.Now()
-		exists2, err := redisClient.SIsMember(setKey, testID2)
+		exists2, err := redisClient.SIsMember(ctx, setKey, testID2)
 		duration2 := time.Since(start2)
 		assert.Nil(t, err, "Should not return error while checking member existence")
 		assert.True(t, exists2, "The user ID should exist in the set")
@@ -241,7 +241,7 @@ func TestRedisClient(t *testing.T) {
 		// 测试查询存在的 ID（最后一个）
 		testID3 := startID + count - 1
 		start3 := time.Now()
-		exists3, err := redisClient.SIsMember(setKey, testID3)
+		exists3, err := redisClient.SIsMember(ctx, setKey, testID3)
 		duration3 := time.Since(start3)
 		assert.Nil(t, err, "Should not return error while checking member existence")
 		assert.True(t, exists3, "The user ID should exist in the set")
@@ -250,7 +250,7 @@ func TestRedisClient(t *testing.T) {
 		// 测试查询不存在的 ID
 		testID4 := startID + count + 1000
 		start4 := time.Now()
-		exists4, err := redisClient.SIsMember(setKey, testID4)
+		exists4, err := redisClient.SIsMember(ctx, setKey, testID4)
 		duration4 := time.Since(start4)
 		assert.Nil(t, err, "Should not return error while checking member existence")
 		assert.False(t, exists4, "The user ID should not exist in the set")
@@ -261,7 +261,7 @@ func TestRedisClient(t *testing.T) {
 		batchStart := time.Now()
 		for i := 0; i < batchCount; i++ {
 			testID := startID + (i * count / batchCount)
-			_, err := redisClient.SIsMember(setKey, testID)
+			_, err := redisClient.SIsMember(ctx, setKey, testID)
 			assert.Nil(t, err, "Should not return error in batch query")
 		}
 		batchDuration := time.Since(batchStart)
@@ -269,7 +269,7 @@ func TestRedisClient(t *testing.T) {
 		t.Logf("批量查询 %d 次总耗时: %v, 平均每次: %v", batchCount, batchDuration, avgDuration)
 
 		// 清理测试数据
-		err = redisClient.Del(setKey)
+		err = redisClient.Del(ctx, setKey)
 		assert.Nil(t, err, "Should not return error while cleaning up test data")
 	})
 }
