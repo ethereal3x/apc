@@ -2,8 +2,9 @@ package tracing
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
-	"net/url"
+	"strings"
 
 	"go.opentelemetry.io/contrib/propagators/b3"
 	"go.opentelemetry.io/otel"
@@ -15,6 +16,8 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.4.0"
 	"go.opentelemetry.io/otel/trace"
 )
+
+const defaultOTLPTraceURLPath = "/v1/traces"
 
 var tracerName = "default_tracer"
 
@@ -31,9 +34,29 @@ type SamplerConfig struct {
 	Param float64 `yaml:"param" json:"param"`
 }
 
+// AuthConfig 定义 OTLP reporter HTTP Basic 认证配置
+type AuthConfig struct {
+	Username string `yaml:"username" json:"username"`
+	Password string `yaml:"password" json:"password"`
+}
+
 // ReporterConfig 定义 tracing 上报配置
 type ReporterConfig struct {
-	CollectorEndpoint string `yaml:"collector_endpoint" json:"collector_endpoint"`
+	CollectorEndpoint string            `yaml:"collector_endpoint" json:"collector_endpoint"`
+	URLPath           string            `yaml:"url_path" json:"url_path"`
+	Insecure          bool              `yaml:"insecure" json:"insecure"`
+	Headers           map[string]string `yaml:"headers" json:"headers"`
+	Auth              AuthConfig        `yaml:"auth" json:"auth"`
+}
+
+// otlpTraceHTTPSettings 描述 OTLP HTTP exporter 连接参数
+type otlpTraceHTTPSettings struct {
+	useFullURL bool
+	fullURL    string
+	endpoint   string
+	urlPath    string
+	insecure   bool
+	headers    map[string]string
 }
 
 // InitProvider 根据配置初始化 tracing provider
@@ -45,7 +68,7 @@ func InitProvider(cfg Config) (func(ctx context.Context) error, error) {
 	if serviceName == "" {
 		serviceName = "default_tracer"
 	}
-	exporter, err := newOTLPTraceHTTPExporter(context.Background(), cfg.Reporter.CollectorEndpoint)
+	exporter, err := newOTLPTraceHTTPExporter(context.Background(), cfg.Reporter)
 	if err != nil {
 		return nil, fmt.Errorf("new otlp trace http exporter: %w", err)
 	}
@@ -67,24 +90,84 @@ func InitProvider(cfg Config) (func(ctx context.Context) error, error) {
 }
 
 // newOTLPTraceHTTPExporter 创建 OTLP HTTP trace exporter
-func newOTLPTraceHTTPExporter(ctx context.Context, endpoint string) (sdktrace.SpanExporter, error) {
-	exporter, err := otlptracehttp.New(ctx, buildOTLPTraceHTTPOptions(endpoint)...)
+func newOTLPTraceHTTPExporter(ctx context.Context, reporter ReporterConfig) (sdktrace.SpanExporter, error) {
+	options, err := buildOTLPTraceHTTPOptions(reporter)
+	if err != nil {
+		return nil, err
+	}
+	exporter, err := otlptracehttp.New(ctx, options...)
 	if err != nil {
 		return nil, err
 	}
 	return exporter, nil
 }
 
+// resolveReporterHeaders 合并自定义 headers，auth 配置优先生成 Authorization
+func resolveReporterHeaders(cfg ReporterConfig) map[string]string {
+	headers := make(map[string]string, len(cfg.Headers))
+	for key, value := range cfg.Headers {
+		headers[key] = value
+	}
+	if cfg.Auth.Username != "" && cfg.Auth.Password != "" {
+		credentials := cfg.Auth.Username + ":" + cfg.Auth.Password
+		headers["Authorization"] = "Basic " + base64.StdEncoding.EncodeToString([]byte(credentials))
+	}
+	return headers
+}
+
+// isFullCollectorURL 判断 collector_endpoint 是否为带 scheme 的完整 URL
+func isFullCollectorURL(endpoint string) bool {
+	return strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://")
+}
+
+// resolveOTLPTraceHTTPSettings 解析 reporter 配置为 OTLP HTTP 连接参数
+func resolveOTLPTraceHTTPSettings(cfg ReporterConfig) (otlpTraceHTTPSettings, error) {
+	headers := resolveReporterHeaders(cfg)
+	if isFullCollectorURL(cfg.CollectorEndpoint) {
+		return otlpTraceHTTPSettings{
+			useFullURL: true,
+			fullURL:    cfg.CollectorEndpoint,
+			insecure:   cfg.Insecure,
+			headers:    headers,
+		}, nil
+	}
+	urlPath := cfg.URLPath
+	if urlPath == "" {
+		urlPath = defaultOTLPTraceURLPath
+	}
+	return otlpTraceHTTPSettings{
+		endpoint: cfg.CollectorEndpoint,
+		urlPath:  urlPath,
+		insecure: cfg.Insecure,
+		headers:  headers,
+	}, nil
+}
+
 // buildOTLPTraceHTTPOptions 构造 OTLP HTTP exporter 连接选项
-func buildOTLPTraceHTTPOptions(endpoint string) []otlptracehttp.Option {
-	parsedURL, err := url.Parse(endpoint)
-	if err == nil && parsedURL.Scheme != "" {
-		return []otlptracehttp.Option{otlptracehttp.WithEndpointURL(endpoint)}
+func buildOTLPTraceHTTPOptions(cfg ReporterConfig) ([]otlptracehttp.Option, error) {
+	settings, err := resolveOTLPTraceHTTPSettings(cfg)
+	if err != nil {
+		return nil, err
 	}
-	return []otlptracehttp.Option{
-		otlptracehttp.WithEndpoint(endpoint),
-		otlptracehttp.WithInsecure(),
+	var options []otlptracehttp.Option
+	if settings.useFullURL {
+		options = append(options, otlptracehttp.WithEndpointURL(settings.fullURL))
+		if settings.insecure {
+			options = append(options, otlptracehttp.WithInsecure())
+		}
+	} else {
+		options = append(options,
+			otlptracehttp.WithEndpoint(settings.endpoint),
+			otlptracehttp.WithURLPath(settings.urlPath),
+		)
+		if settings.insecure {
+			options = append(options, otlptracehttp.WithInsecure())
+		}
 	}
+	if len(settings.headers) > 0 {
+		options = append(options, otlptracehttp.WithHeaders(settings.headers))
+	}
+	return options, nil
 }
 
 // buildSampler 根据配置创建 tracing 采样器

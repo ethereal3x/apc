@@ -47,3 +47,50 @@ return errs.Handle(&userpb.GetUserResponse{}, func(rsp *userpb.GetUserResponse) 
 ```
 
 `GenProtoReply` 保持可用，新旧 API 语义一致。
+
+### Tracing（OTLP HTTP）
+
+通过 `plugin.tracing` 配置 OpenTelemetry trace 上报。`collector_endpoint` 为空时不初始化 exporter，服务可正常启动。
+
+#### 本地开发（HTTP Collector）
+
+```yaml
+plugin:
+  tracing:
+    service_name: my-service
+    sampler:
+      type: ratio
+      param: 1.0
+    reporter:
+      collector_endpoint: http://localhost:4318/v1/traces
+```
+
+#### 自建 Collector（HTTPS + Basic Auth）
+
+```yaml
+plugin:
+  tracing:
+    service_name: mint-server
+    sampler:
+      type: ratio
+      param: 1.0
+    reporter:
+      collector_endpoint: otel.l3xx.cc:443
+      url_path: /v1/traces          # 可选，默认 /v1/traces
+      insecure: false               # 可选，默认 false（启用 TLS）
+      auth:
+        username: otel
+        password: "${OTEL_AUTH_PASSWORD}"  # 从环境变量或 Secret 注入，勿提交到 git
+```
+
+也支持完整 URL：`collector_endpoint: https://otel.l3xx.cc/v1/traces`
+
+| 字段 | 说明 |
+|---|---|
+| `collector_endpoint` | Collector 地址；支持 `host:port` 或完整 URL |
+| `url_path` | 仅 `host:port` 模式生效，默认 `/v1/traces` |
+| `insecure` | 是否禁用 TLS；`host:port` 模式默认 `false` |
+| `headers` | 自定义 HTTP 头 |
+| `auth` | Basic 认证；若同时配置 `auth` 与 `headers.Authorization`，优先使用 `auth` 自动生成 |
+
+消费方在启动时调用 `tracing.InitProvider(config.GetConf().Plugin.Tracing)` 即可，业务代码使用 `tracing.Start()` 创建 span。
