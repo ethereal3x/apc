@@ -2,6 +2,7 @@ package tracing
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"fmt"
 	"strings"
@@ -45,6 +46,7 @@ type ReporterConfig struct {
 	CollectorEndpoint string            `yaml:"collector_endpoint" json:"collector_endpoint"`
 	URLPath           string            `yaml:"url_path" json:"url_path"`
 	Insecure          bool              `yaml:"insecure" json:"insecure"`
+	TLSSkipVerify     bool              `yaml:"tls_skip_verify" json:"tls_skip_verify"`
 	Headers           map[string]string `yaml:"headers" json:"headers"`
 	Auth              AuthConfig        `yaml:"auth" json:"auth"`
 }
@@ -166,6 +168,11 @@ func buildOTLPTraceHTTPOptions(cfg ReporterConfig) ([]otlptracehttp.Option, erro
 	}
 	if len(settings.headers) > 0 {
 		options = append(options, otlptracehttp.WithHeaders(settings.headers))
+	}
+	if cfg.TLSSkipVerify {
+		options = append(options, otlptracehttp.WithTLSClientConfig(&tls.Config{
+			InsecureSkipVerify: true, //nolint:gosec // 自建 collector 自签证书场景
+		}))
 	}
 	return options, nil
 }

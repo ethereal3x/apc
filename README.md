@@ -78,6 +78,7 @@ plugin:
       collector_endpoint: otel.l3xx.cc:443
       url_path: /v1/traces          # 可选，默认 /v1/traces
       insecure: false               # 可选，默认 false（启用 TLS）
+      tls_skip_verify: true         # 可选，自签证书场景跳过校验（Traefik 默认证书等）
       auth:
         username: otel
         password: "${OTEL_AUTH_PASSWORD}"  # 从环境变量或 Secret 注入，勿提交到 git
@@ -89,7 +90,8 @@ plugin:
 |---|---|
 | `collector_endpoint` | Collector 地址；支持 `host:port` 或完整 URL |
 | `url_path` | 仅 `host:port` 模式生效，默认 `/v1/traces` |
-| `insecure` | 是否禁用 TLS；`host:port` 模式默认 `false` |
+| `insecure` | 是否使用 HTTP 明文（非 HTTPS）；`host:port` 模式默认 `false` |
+| `tls_skip_verify` | HTTPS 场景跳过证书校验；用于自签证书，与 `insecure` 不同 |
 | `headers` | 自定义 HTTP 头 |
 | `auth` | Basic 认证；若同时配置 `auth` 与 `headers.Authorization`，优先使用 `auth` 自动生成 |
 

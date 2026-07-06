@@ -230,6 +230,17 @@ func TestBuildOTLPTraceHTTPOptions(t *testing.T) {
 			},
 		},
 		{
+			name: "HTTPS host:port 带 tls_skip_verify 可构建 options",
+			cfg: ReporterConfig{
+				CollectorEndpoint: "otel.l3xx.cc:443",
+				TLSSkipVerify:     true,
+				Auth: AuthConfig{
+					Username: "otel",
+					Password: "secret",
+				},
+			},
+		},
+		{
 			name: "完整 URL 可构建 options",
 			cfg: ReporterConfig{
 				CollectorEndpoint: "https://otel.l3xx.cc/v1/traces",
