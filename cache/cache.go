@@ -683,3 +683,8 @@ func (r *RedisClient) XInfoGroups(ctx context.Context, stream string) ([]redis.X
 	}
 	return result, nil
 }
+
+// UniversalClient 返回底层 go-redis 客户端，供需要原生接口的组件使用
+func (r *RedisClient) UniversalClient() redis.UniversalClient {
+	return r.client
+}
