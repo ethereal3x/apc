@@ -144,6 +144,27 @@ func allowCORS(next http.Handler) http.Handler {
 	})
 }
 
+// allowCORSWithHeaders 处理跨域请求头和预检请求，支持自定义允许的请求头
+func allowCORSWithHeaders(next http.Handler, allowedHeaders []string) http.Handler {
+	if len(allowedHeaders) == 0 {
+		allowedHeaders = []string{"Content-Type", "Accept", "Authorization"}
+	}
+	allowedHeadersStr := strings.Join(allowedHeaders, ",")
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if origin := r.Header.Get("Origin"); origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
+				w.Header().Set("Access-Control-Allow-Headers", allowedHeadersStr)
+				methods := []string{"GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS"}
+				w.Header().Set("Access-Control-Allow-Methods", strings.Join(methods, ","))
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // propagateTracing 创建并透传 HTTP gateway 入口 tracing span
 func propagateTracing(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

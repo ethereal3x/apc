@@ -17,6 +17,11 @@ func NewRedisClient(client *redis.Client) *RedisClient {
 	return &RedisClient{client: client}
 }
 
+// Close 关闭 Redis 连接
+func (r *RedisClient) Close() error {
+	return r.client.Close()
+}
+
 // Get 获取单个key的值
 func (r *RedisClient) Get(ctx context.Context, key string) (string, error) {
 	val, err := r.client.Get(ctx, key).Result()

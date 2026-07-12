@@ -16,10 +16,11 @@ const defaultWriteTimeout = 15 * time.Second
 
 type HttpServer struct {
 	Server
-	serveMuxOptions  []runtime.ServeMuxOption
-	registerFunction func(context.Context, *runtime.ServeMux) error
-	writeTimeout     time.Duration
-	middlewares      []func(http.Handler) http.Handler
+	serveMuxOptions    []runtime.ServeMuxOption
+	registerFunction   func(context.Context, *runtime.ServeMux) error
+	writeTimeout       time.Duration
+	middlewares        []func(http.Handler) http.Handler
+	corsAllowedHeaders []string
 }
 
 func (s *HttpServer) SetRegisterFunc(registerFunc func(context.Context, *runtime.ServeMux) error) {
@@ -39,6 +40,11 @@ func (s *HttpServer) SetWriteTimeout(d time.Duration) {
 // 中间件在 recovery/CORS/tracing 之后、mux 之前执行。
 func (s *HttpServer) SetMiddleware(mws ...func(http.Handler) http.Handler) {
 	s.middlewares = append(s.middlewares, mws...)
+}
+
+// SetCORSAllowedHeaders 设置 CORS 允许的自定义请求头，覆盖默认的 Content-Type/Accept/Authorization
+func (s *HttpServer) SetCORSAllowedHeaders(headers []string) {
+	s.corsAllowedHeaders = headers
 }
 
 func NewHttpServer() *HttpServer {
@@ -67,7 +73,7 @@ func (s *HttpServer) run(ctx context.Context, wg *sync.WaitGroup) {
 
 	hs := &http.Server{
 		Addr:              s.address,
-		Handler:           recovery(allowCORS(propagateTracing(handler))),
+		Handler:           recovery(allowCORSWithHeaders(propagateTracing(handler), s.corsAllowedHeaders)),
 		ReadHeaderTimeout: 15 * time.Second,
 		WriteTimeout:      s.writeTimeout,
 	}
