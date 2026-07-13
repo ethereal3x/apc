@@ -3,9 +3,11 @@ package tool
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
@@ -97,4 +99,121 @@ func TestUnmarshalBodyReturnsErrorForNilResponse(t *testing.T) {
 
 	err := client.UnmarshalBody(nil, &out)
 	require.ErrorContains(t, err, "response is nil")
+}
+
+// TestDoValidatesMethodAndURL 验证 Do 在 method 或 URL 为空时返回校验错误
+func TestDoValidatesMethodAndURL(t *testing.T) {
+	t.Run("empty method", func(t *testing.T) {
+		client := NewHttpClient(context.Background()).
+			SetUrl("http://localhost")
+		_, err := client.Do()
+		require.Error(t, err)
+	})
+
+	t.Run("empty url", func(t *testing.T) {
+		client := NewHttpClient(context.Background()).
+			SetMethod(http.MethodGet)
+		_, err := client.Do()
+		require.Error(t, err)
+	})
+}
+
+// TestDoEquivalentToRequest 验证 Do 与 Request 行为一致
+func TestDoEquivalentToRequest(t *testing.T) {
+	setupTestTracer()
+	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		responseWriter.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(responseWriter).Encode(map[string]interface{}{"ok": true})
+	}))
+	defer server.Close()
+
+	resp, err := NewHttpClient(context.Background()).
+		SetMethod(http.MethodGet).
+		SetUrl(server.URL).
+		Do()
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.NoError(t, resp.Body.Close())
+}
+
+// TestWithHTTPClientInjectsCustomTransport 验证注入自定义 http.Client 可正常工作
+func TestWithHTTPClientInjectsCustomTransport(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		responseWriter.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(responseWriter).Encode(map[string]interface{}{"ok": true})
+	}))
+	defer server.Close()
+
+	injected := &http.Client{}
+	resp, err := NewHttpClient(context.Background(), WithHTTPClient(injected)).
+		SetMethod(http.MethodGet).
+		SetUrl(server.URL).
+		Do()
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.NoError(t, resp.Body.Close())
+}
+
+// TestWithTimeoutOption 验证 WithTimeout 设置请求超时
+func TestWithTimeoutOption(t *testing.T) {
+	client := NewHttpClient(context.Background(), WithTimeout(0))
+	require.Equal(t, 0, int(client.Timeout))
+}
+
+// TestTimeoutDoesNotMutateInjectedClient 验证请求超时设置不会修改注入的共享 client
+func TestTimeoutDoesNotMutateInjectedClient(t *testing.T) {
+	injected := &http.Client{Timeout: time.Second}
+	client := NewHttpClient(context.Background(), WithHTTPClient(injected)).
+		SetTimeout(2 * time.Second)
+
+	require.Equal(t, time.Second, injected.Timeout)
+	require.Equal(t, 2*time.Second, client.Timeout)
+}
+
+// TestWithEnableTraceFalse 验证 WithEnableTrace(false) 禁用 tracing
+func TestWithEnableTraceFalse(t *testing.T) {
+	exporter := setupTestTracer()
+	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		_, _ = responseWriter.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	client := NewHttpClient(context.Background(), WithEnableTrace(false)).
+		SetMethod(http.MethodGet).
+		SetUrl(server.URL)
+	resp, err := client.Do()
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	require.Len(t, exporter.GetSpans(), 0, "no spans when tracing disabled")
+}
+
+// TestSetBodyEmptyReturnsError 验证空 body 设置记录错误
+func TestSetBodyEmptyReturnsError(t *testing.T) {
+	client := NewHttpClient(context.Background()).
+		SetMethod(http.MethodPost).
+		SetUrl("http://localhost").
+		SetBody(map[string]interface{}{})
+	_, err := client.Do()
+	require.ErrorIs(t, err, ErrParamsEmpty)
+}
+
+// TestSetQueryParamsEmptyReturnsError 验证空查询参数记录错误
+func TestSetQueryParamsEmptyReturnsError(t *testing.T) {
+	client := NewHttpClient(context.Background()).
+		SetMethod(http.MethodGet).
+		SetUrl("http://localhost").
+		SetQueryParams(map[string]interface{}{})
+	_, err := client.Do()
+	require.ErrorIs(t, err, ErrParamsEmpty)
+}
+
+// TestRequestErrorReturnsWrappedError 验证网络错误返回包装后的 error
+func TestRequestErrorReturnsWrappedError(t *testing.T) {
+	setupTestTracer()
+	client := NewHttpClient(context.Background()).
+		SetMethod(http.MethodGet).
+		SetUrl("http://127.0.0.1:0/nonexistent")
+	_, err := client.Do()
+	require.Error(t, err)
+	require.False(t, errors.Is(err, ErrParamsEmpty))
 }

@@ -6,11 +6,10 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"syscall"
+	"time"
 
 	os_runtime "runtime"
 
@@ -31,13 +30,14 @@ type Server struct {
 	log     logger.Logger
 }
 
-func (s *Server) SetAddress(address string) {
-	s.address = address
+// SetAddress 设置服务监听地址
+func (server *Server) SetAddress(address string) {
+	server.address = address
 }
 
 // SetLogger 设置自定义 logger 实例
-func (s *Server) SetLogger(log logger.Logger) {
-	s.log = log
+func (server *Server) SetLogger(log logger.Logger) {
+	server.log = log
 }
 
 // NewServer 创建基础服务实例
@@ -48,22 +48,24 @@ func NewServer(addr string) Server {
 	}
 }
 
-func goRoutineStack(p interface{}) (err error) {
+// goRoutineStack 捕获 panic 堆栈并转换为 gRPC 错误
+func goRoutineStack(panicValue interface{}) (err error) {
 	var buf [8192]byte
-	n := os_runtime.Stack(buf[:], false)
-	stack := strings.Split(string(buf[:n]), "\n")
-	var stackNew strings.Builder
+	stackSize := os_runtime.Stack(buf[:], false)
+	stack := strings.Split(string(buf[:stackSize]), "\n")
+	var filteredStack strings.Builder
 	for i := 0; i < len(stack)-1; i++ {
 		line := stack[i]
 		if strings.Contains(line, "go-grpc-middleware") || strings.Contains(line, "google.golang.org") {
 			continue
 		}
-		stackNew.WriteString(line + "\n")
+		filteredStack.WriteString(line + "\n")
 	}
-	fmt.Printf("panic: %v, stack: %s\n", p, &stackNew)
-	return status.Errorf(codes.Unknown, "panic triggered: %v", p)
+	fmt.Printf("panic: %v, stack: %s\n", panicValue, &filteredStack)
+	return status.Errorf(codes.Unknown, "panic triggered: %v", panicValue)
 }
 
+// generateFrameworkMetadata 生成 grpc-gateway 透传到 gRPC metadata 的框架信息
 func generateFrameworkMetadata() runtime.ServeMuxOption {
 	return runtime.WithMetadata(func(ctx context.Context, request *http.Request) metadata.MD {
 		md, ok := runtime.ServerMetadataFromContext(ctx)
@@ -108,8 +110,9 @@ func propagateTracingMetadata() runtime.ServeMuxOption {
 	})
 }
 
+// recovery 捕获 HTTP handler panic 并返回 500
 func recovery(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
 		defer func() {
 			err := recover()
 			if err != nil {
@@ -117,30 +120,30 @@ func recovery(next http.Handler) http.Handler {
 				jsonBody, _ := json.Marshal(map[string]interface{}{
 					"error": fmt.Sprintf("internal server panic: %v", err),
 				})
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusInternalServerError)
-				_, _ = w.Write(jsonBody)
+				responseWriter.Header().Set("Content-Type", "application/json")
+				responseWriter.WriteHeader(http.StatusInternalServerError)
+				_, _ = responseWriter.Write(jsonBody)
 			}
 		}()
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(responseWriter, request)
 	})
 }
 
 // allowCORS 处理跨域请求头和预检请求
 func allowCORS(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if origin := r.Header.Get("Origin"); origin != "" {
-			w.Header().Set("Access-Control-Allow-Origin", "*")
-			if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
+	return http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		if origin := request.Header.Get("Origin"); origin != "" {
+			responseWriter.Header().Set("Access-Control-Allow-Origin", "*")
+			if request.Method == http.MethodOptions && request.Header.Get("Access-Control-Request-Method") != "" {
 				headers := []string{"Content-Type", "Accept", "Authorization"}
-				w.Header().Set("Access-Control-Allow-Headers", strings.Join(headers, ","))
+				responseWriter.Header().Set("Access-Control-Allow-Headers", strings.Join(headers, ","))
 				methods := []string{"GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS"}
-				w.Header().Set("Access-Control-Allow-Methods", strings.Join(methods, ","))
-				w.WriteHeader(http.StatusNoContent)
+				responseWriter.Header().Set("Access-Control-Allow-Methods", strings.Join(methods, ","))
+				responseWriter.WriteHeader(http.StatusNoContent)
 				return
 			}
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(responseWriter, request)
 	})
 }
 
@@ -150,76 +153,109 @@ func allowCORSWithHeaders(next http.Handler, allowedHeaders []string) http.Handl
 		allowedHeaders = []string{"Content-Type", "Accept", "Authorization"}
 	}
 	allowedHeadersStr := strings.Join(allowedHeaders, ",")
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if origin := r.Header.Get("Origin"); origin != "" {
-			w.Header().Set("Access-Control-Allow-Origin", "*")
-			if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
-				w.Header().Set("Access-Control-Allow-Headers", allowedHeadersStr)
+	return http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		if origin := request.Header.Get("Origin"); origin != "" {
+			responseWriter.Header().Set("Access-Control-Allow-Origin", "*")
+			if request.Method == http.MethodOptions && request.Header.Get("Access-Control-Request-Method") != "" {
+				responseWriter.Header().Set("Access-Control-Allow-Headers", allowedHeadersStr)
 				methods := []string{"GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS"}
-				w.Header().Set("Access-Control-Allow-Methods", strings.Join(methods, ","))
-				w.WriteHeader(http.StatusNoContent)
+				responseWriter.Header().Set("Access-Control-Allow-Methods", strings.Join(methods, ","))
+				responseWriter.WriteHeader(http.StatusNoContent)
 				return
 			}
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(responseWriter, request)
 	})
 }
 
 // propagateTracing 创建并透传 HTTP gateway 入口 tracing span
 func propagateTracing(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
-		ctx, span := apctracing.Start(ctx, fmt.Sprintf("HTTP-gRPC %s %s", r.Method, r.URL.Path))
+	return http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		ctx := otel.GetTextMapPropagator().Extract(request.Context(), propagation.HeaderCarrier(request.Header))
+		ctx, span := apctracing.Start(ctx, fmt.Sprintf("HTTP-gRPC %s %s", request.Method, request.URL.Path))
 		defer span.End()
-		w.Header().Set("Tracing-Id", apctracing.TraceID(ctx))
-		next.ServeHTTP(w, r.WithContext(ctx))
+		responseWriter.Header().Set("Tracing-Id", apctracing.TraceID(ctx))
+		next.ServeHTTP(responseWriter, request.WithContext(ctx))
 	})
 }
 
-// RunGrpcGatewayService 启动 gRPC 和 HTTP gateway 服务
-func RunGrpcGatewayService(rs *GrpcServer, hs *HttpServer) {
-	shutdownTracing := initTracingProvider()
+// Runner 是可被 Supervisor 编排的服务，Run 在 ctx 取消前阻塞，返回服务运行期间的错误
+type Runner interface {
+	Run(ctx context.Context) error
+}
+
+// RunGrpcGatewayService 启动 gRPC 和 HTTP gateway 服务，监听系统信号并在服务错误时退出
+func RunGrpcGatewayService(grpcServer *GrpcServer, httpServer *HttpServer) {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	if err := RunGrpcGatewayServiceContext(ctx, grpcServer, httpServer); err != nil {
+		log.Fatalf("run grpc gateway service failed: %v", err)
+	}
+}
+
+// RunGrpcGatewayServiceContext 启动 gRPC 和 HTTP gateway 服务，任一服务出错时取消其他服务
+// 信号监听由调用方负责，ctx 取消后所有服务执行优雅关闭
+func RunGrpcGatewayServiceContext(ctx context.Context, grpcServer *GrpcServer, httpServer *HttpServer) error {
+	shutdownTracing, err := initTracingProvider()
+	if err != nil {
+		return err
+	}
 	defer func() {
-		if err := shutdownTracing(context.Background()); err != nil {
-			log.Printf("shutdown tracing provider failed: %v", err)
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		if shutdownErr := shutdownTracing(shutdownCtx); shutdownErr != nil {
+			log.Printf("shutdown tracing provider failed: %v", shutdownErr)
 		}
 	}()
 	if err := WritePidFile(); err != nil {
-		log.Fatalf("failed to write pid file: %v", err)
-		return
+		return fmt.Errorf("write pid file: %w", err)
 	}
 	defer RmPidFile()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	// 子 context 取消时不会中断父 ctx，使 shutdown 能正常执行
+	supervisorCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	var wg sync.WaitGroup
-	if rs.address != "" {
-		wg.Add(1)
-		go rs.run(ctx, &wg)
+	var runners []Runner
+	if grpcServer != nil && grpcServer.address != "" {
+		runners = append(runners, grpcServer)
 	}
-	if hs.address != "" {
-		wg.Add(1)
-		go hs.run(ctx, &wg)
+	if httpServer != nil && httpServer.address != "" {
+		runners = append(runners, httpServer)
+	}
+	if len(runners) == 0 {
+		return nil
 	}
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	errCh := runServices(supervisorCtx, runners)
 
-	go func() {
-		s := <-sigCh
-		log.Printf("ready.to.shutdown: %v", s.String())
+	// 任一服务返回后取消其他服务并继续等待退出
+	var firstErr error
+	for range runners {
+		if serviceErr := <-errCh; serviceErr != nil && firstErr == nil {
+			firstErr = serviceErr
+		}
 		cancel()
-	}()
-
-	wg.Wait()
+	}
+	return firstErr
 }
 
-// initTracingProvider 根据配置初始化 tracing provider
-func initTracingProvider() func(context.Context) error {
+// runServices 并行启动所有服务，通过 fan-in channel 汇聚各服务错误
+func runServices(ctx context.Context, runners []Runner) <-chan error {
+	errCh := make(chan error, len(runners))
+	for _, runner := range runners {
+		go func(service Runner) {
+			errCh <- service.Run(ctx)
+		}(runner)
+	}
+	return errCh
+}
+
+// initTracingProvider 根据配置初始化 tracing provider，返回关闭函数和初始化错误
+func initTracingProvider() (func(context.Context) error, error) {
 	shutdown, err := apctracing.InitProvider(config.GetConf().Plugin.Tracing)
 	if err != nil {
-		log.Fatalf("init tracing provider failed: %v", err)
+		return nil, fmt.Errorf("init tracing provider: %w", err)
 	}
-	return shutdown
+	return shutdown, nil
 }

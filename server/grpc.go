@@ -2,9 +2,10 @@ package server
 
 import (
 	"context"
-	"log"
+	"errors"
+	"fmt"
 	"net"
-	"sync"
+	"time"
 
 	"github.com/ethereal3x/apc/config"
 	grpc_recovery "github.com/grpc-ecosystem/go-grpc-middleware/recovery"
@@ -13,6 +14,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/encoding/protojson"
 )
+
+const defaultGrpcStopTimeout = 5 * time.Second
 
 type GrpcServer struct {
 	Server
@@ -24,31 +27,34 @@ type GrpcServer struct {
 	registerFunction func(*grpc.Server)
 }
 
-func (s *GrpcServer) SetInterceptors(streamInterceptors []grpc.StreamServerInterceptor, unaryInterceptors []grpc.UnaryServerInterceptor) {
-	s.streamInterceptors = append(s.streamInterceptors, streamInterceptors...)
-	s.unaryInterceptors = append(s.unaryInterceptors, unaryInterceptors...)
+// SetInterceptors 设置 gRPC 流式和 unary 拦截器
+func (server *GrpcServer) SetInterceptors(streamInterceptors []grpc.StreamServerInterceptor, unaryInterceptors []grpc.UnaryServerInterceptor) {
+	server.streamInterceptors = append(server.streamInterceptors, streamInterceptors...)
+	server.unaryInterceptors = append(server.unaryInterceptors, unaryInterceptors...)
 }
 
 // SetRegisterFunc 设置 gRPC 服务注册回调函数
-func (s *GrpcServer) SetRegisterFunc(fn func(*grpc.Server)) {
-	s.registerFunction = fn
+func (server *GrpcServer) SetRegisterFunc(fn func(*grpc.Server)) {
+	server.registerFunction = fn
 }
 
-func (s *GrpcServer) genServerOptions() ([]grpc.StreamServerInterceptor, []grpc.UnaryServerInterceptor) {
+// genServerOptions 生成 gRPC 服务端拦截器配置
+func (server *GrpcServer) genServerOptions() ([]grpc.StreamServerInterceptor, []grpc.UnaryServerInterceptor) {
 	streamInterceptors := []grpc.StreamServerInterceptor{
 		grpc_ctxtags.StreamServerInterceptor(grpc_ctxtags.WithFieldExtractor(grpc_ctxtags.CodeGenRequestFieldExtractor)),
 		grpc_recovery.StreamServerInterceptor(grpc_recovery.WithRecoveryHandler(goRoutineStack)),
 	}
-	streamInterceptors = append(streamInterceptors, s.streamInterceptors...)
+	streamInterceptors = append(streamInterceptors, server.streamInterceptors...)
 
 	unaryInterceptors := []grpc.UnaryServerInterceptor{
 		grpc_ctxtags.UnaryServerInterceptor(grpc_ctxtags.WithFieldExtractor(grpc_ctxtags.CodeGenRequestFieldExtractor)),
 		grpc_recovery.UnaryServerInterceptor(grpc_recovery.WithRecoveryHandler(goRoutineStack)),
 	}
-	unaryInterceptors = append(unaryInterceptors, s.unaryInterceptors...)
+	unaryInterceptors = append(unaryInterceptors, server.unaryInterceptors...)
 	return streamInterceptors, unaryInterceptors
 }
 
+// NewRpcServer 创建 gRPC 服务实例
 func NewRpcServer() *GrpcServer {
 	return &GrpcServer{
 		Server:             NewServer(config.GetConf().Server.GrpcAddr),
@@ -57,33 +63,51 @@ func NewRpcServer() *GrpcServer {
 	}
 }
 
-// run 启动 gRPC 服务并监听 ctx 取消信号执行优雅关闭
-func (s *GrpcServer) run(ctx context.Context, wg *sync.WaitGroup) {
-	defer wg.Done()
-	sock, err := net.Listen("tcp", s.address)
+// Run 启动 gRPC 服务并监听 ctx 取消信号执行优雅关闭，返回服务运行期间的错误
+func (server *GrpcServer) Run(ctx context.Context) error {
+	listener, err := net.Listen("tcp", server.address)
 	if err != nil {
-		log.Fatalf("rpc start to listen error: %v", err)
+		return fmt.Errorf("grpc listen %s: %w", server.address, err)
 	}
-	streamServerInterceptors, unaryServerInterceptors := s.genServerOptions()
+	streamServerInterceptors, unaryServerInterceptors := server.genServerOptions()
 	serverOptions := []grpc.ServerOption{
 		grpc.ChainStreamInterceptor(streamServerInterceptors...),
 		grpc.ChainUnaryInterceptor(unaryServerInterceptors...),
 	}
 
-	server := grpc.NewServer(serverOptions...)
-	if s.registerFunction != nil {
-		s.registerFunction(server)
+	grpcServer := grpc.NewServer(serverOptions...)
+	if server.registerFunction != nil {
+		server.registerFunction(grpcServer)
 	}
 
-	go func() {
-		<-ctx.Done()
-		s.log.ContextInfo(ctx, "rpc service quit")
-		server.GracefulStop()
-	}()
+	go server.shutdownGrpcServer(ctx, grpcServer)
 
-	_ = server.Serve(sock)
+	if err := grpcServer.Serve(listener); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+		return fmt.Errorf("grpc serve: %w", err)
+	}
+	return nil
 }
 
+// shutdownGrpcServer 优雅停止 gRPC 服务，超时后强制停止
+func (server *GrpcServer) shutdownGrpcServer(ctx context.Context, grpcServer *grpc.Server) {
+	<-ctx.Done()
+	server.log.ContextInfo(ctx, "rpc service quit")
+	stoppedCh := make(chan struct{})
+	go func() {
+		grpcServer.GracefulStop()
+		close(stoppedCh)
+	}()
+
+	timer := time.NewTimer(defaultGrpcStopTimeout)
+	defer timer.Stop()
+	select {
+	case <-stoppedCh:
+	case <-timer.C:
+		grpcServer.Stop()
+	}
+}
+
+// setMarshalerOption 设置 grpc-gateway JSON 序列化选项
 func setMarshalerOption() runtime.ServeMuxOption {
 	marshaler := &runtime.HTTPBodyMarshaler{
 		Marshaler: &runtime.JSONPb{

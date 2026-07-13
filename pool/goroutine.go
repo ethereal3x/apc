@@ -1,6 +1,7 @@
 package pool
 
 import (
+	"context"
 	"errors"
 	"sync"
 )
@@ -10,16 +11,23 @@ var (
 	ErrNilTask = errors.New("pool: nil task")
 )
 
-type GoroutinePool struct {
+// Executor 协程池，支持 context 取消、panic 隔离和明确的生命周期管理
+type Executor struct {
 	jobs chan func()
-	wg   sync.WaitGroup
-	once sync.Once
-	mu   sync.RWMutex
 
-	closed bool
+	// taskWG 跟踪所有已通过 Submit 计入的任务，Wait 等待其归零
+	taskWG sync.WaitGroup
+
+	// submitWG + submitMu 保证 Close 在关闭 closeCh 后等待正在进行的 Submit，
+	// 从而安全 close(jobs) 而不会触发 "send on closed channel" panic
+	submitWG sync.WaitGroup
+	submitMu sync.Mutex
+	closeCh  chan struct{}
+	closed   bool
 }
 
-func NewGoroutinePool(workerNum int, queueSize ...int) *GoroutinePool {
+// NewExecutor 创建协程池实例，workerNum 为 worker 数量，queueSize 为任务队列长度
+func NewExecutor(workerNum int, queueSize ...int) *Executor {
 	if workerNum <= 0 {
 		workerNum = 1
 	}
@@ -29,56 +37,91 @@ func NewGoroutinePool(workerNum int, queueSize ...int) *GoroutinePool {
 		size = queueSize[0]
 	}
 
-	p := &GoroutinePool{
-		jobs: make(chan func(), size),
+	executor := &Executor{
+		jobs:    make(chan func(), size),
+		closeCh: make(chan struct{}),
 	}
-	for i := 0; i < workerNum; i++ {
-		go p.run()
+	for range workerNum {
+		go executor.run()
 	}
-	return p
+	return executor
 }
 
-func (p *GoroutinePool) Submit(task func()) error {
+// Submit 提交任务到协程池，ctx 取消时立即返回 ctx.Err()
+func (e *Executor) Submit(ctx context.Context, task func()) error {
 	if task == nil {
 		return ErrNilTask
 	}
-	if p == nil {
+	if e == nil {
 		return ErrClosed
 	}
 
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	if p.closed {
+	// 防止与 Close 并发：Close 设置 closed 后会等待所有进行中的 Submit 退出
+	e.submitMu.Lock()
+	if e.closed {
+		e.submitMu.Unlock()
 		return ErrClosed
 	}
+	e.submitWG.Add(1)
+	e.submitMu.Unlock()
+	defer e.submitWG.Done()
 
-	p.wg.Add(1)
-	p.jobs <- task
-	return nil
+	e.taskWG.Add(1)
+	select {
+	case e.jobs <- task:
+		return nil
+	case <-e.closeCh:
+		e.taskWG.Done()
+		return ErrClosed
+	case <-ctx.Done():
+		e.taskWG.Done()
+		return ctx.Err()
+	}
 }
 
-func (p *GoroutinePool) Wait() {
-	if p == nil {
+// Wait 等待所有已提交任务执行完成
+func (e *Executor) Wait() {
+	if e == nil {
 		return
 	}
-	p.wg.Wait()
+	e.taskWG.Wait()
 }
 
-func (p *GoroutinePool) Close() {
-	if p == nil {
+// Close 关闭协程池，停止接收新任务并等待队列中剩余任务执行完毕
+func (e *Executor) Close() {
+	if e == nil {
 		return
 	}
-	p.once.Do(func() {
-		p.mu.Lock()
-		p.closed = true
-		close(p.jobs)
-		p.mu.Unlock()
-	})
+
+	e.submitMu.Lock()
+	if e.closed {
+		e.submitMu.Unlock()
+		return
+	}
+	e.closed = true
+	close(e.closeCh)
+	e.submitMu.Unlock()
+
+	// 等待所有正在进行的 Submit 退出，确保不会再有发送方
+	e.submitWG.Wait()
+	close(e.jobs)
+
+	// 等待所有已计入的任务完成
+	e.taskWG.Wait()
 }
 
-func (p *GoroutinePool) run() {
-	for task := range p.jobs {
-		task()
-		p.wg.Done()
+// run 是 worker 主循环，隔离 panic 并确保 taskWG.Done 一定执行
+func (e *Executor) run() {
+	for task := range e.jobs {
+		e.executeTask(task)
 	}
+}
+
+// executeTask 执行单个任务，隔离 panic 并确保 Done 一定被调用
+func (e *Executor) executeTask(task func()) {
+	defer e.taskWG.Done()
+	defer func() {
+		_ = recover()
+	}()
+	task()
 }

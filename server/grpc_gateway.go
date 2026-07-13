@@ -3,16 +3,18 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/ethereal3x/apc/config"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
-	"go.uber.org/zap"
 )
 
-const defaultWriteTimeout = 15 * time.Second
+const (
+	defaultWriteTimeout        = 15 * time.Second
+	defaultHTTPShutdownTimeout = 5 * time.Second
+)
 
 type HttpServer struct {
 	Server
@@ -23,30 +25,33 @@ type HttpServer struct {
 	corsAllowedHeaders []string
 }
 
-func (s *HttpServer) SetRegisterFunc(registerFunc func(context.Context, *runtime.ServeMux) error) {
-	s.registerFunction = registerFunc
+// SetRegisterFunc 设置 HTTP gateway 路由注册回调函数
+func (server *HttpServer) SetRegisterFunc(registerFunc func(context.Context, *runtime.ServeMux) error) {
+	server.registerFunction = registerFunc
 }
 
-func (s *HttpServer) SetServeMuxOpts(opts []runtime.ServeMuxOption) {
-	s.serveMuxOptions = opts
+// SetServeMuxOpts 设置 grpc-gateway mux 选项
+func (server *HttpServer) SetServeMuxOpts(opts []runtime.ServeMuxOption) {
+	server.serveMuxOptions = opts
 }
 
 // SetWriteTimeout 设置 HTTP 写超时，0 表示不限制（用于流式响应）
-func (s *HttpServer) SetWriteTimeout(d time.Duration) {
-	s.writeTimeout = d
+func (server *HttpServer) SetWriteTimeout(timeout time.Duration) {
+	server.writeTimeout = timeout
 }
 
-// SetMiddleware 设置 HTTP 中间件链，按顺序包裹在 grpc-gateway mux 外层。
-// 中间件在 recovery/CORS/tracing 之后、mux 之前执行。
-func (s *HttpServer) SetMiddleware(mws ...func(http.Handler) http.Handler) {
-	s.middlewares = append(s.middlewares, mws...)
+// SetMiddleware 设置 HTTP 中间件链，按顺序包裹在 grpc-gateway mux 外层
+// 中间件在 recovery/CORS/tracing 之后、mux 之前执行
+func (server *HttpServer) SetMiddleware(middlewares ...func(http.Handler) http.Handler) {
+	server.middlewares = append(server.middlewares, middlewares...)
 }
 
 // SetCORSAllowedHeaders 设置 CORS 允许的自定义请求头，覆盖默认的 Content-Type/Accept/Authorization
-func (s *HttpServer) SetCORSAllowedHeaders(headers []string) {
-	s.corsAllowedHeaders = headers
+func (server *HttpServer) SetCORSAllowedHeaders(headers []string) {
+	server.corsAllowedHeaders = headers
 }
 
+// NewHttpServer 创建 HTTP gateway 服务实例
 func NewHttpServer() *HttpServer {
 	return &HttpServer{
 		Server:          NewServer(config.GetConf().Server.GatewayAddr),
@@ -55,39 +60,53 @@ func NewHttpServer() *HttpServer {
 	}
 }
 
-// run 初始化 HTTP gateway mux 并注册服务路由，监听 ctx 取消信号优雅关闭
-func (s *HttpServer) run(ctx context.Context, wg *sync.WaitGroup) {
-	defer wg.Done()
+// Run 初始化 HTTP gateway mux 并注册服务路由，监听 ctx 取消信号优雅关闭，返回服务运行期间的错误
+func (server *HttpServer) Run(ctx context.Context) error {
 	mux := runtime.NewServeMux(
-		append(s.serveMuxOptions, propagateTracingMetadata(), generateFrameworkMetadata(), setMarshalerOption())...)
-	if s.registerFunction != nil {
-		if err := s.registerFunction(ctx, mux); err != nil {
-			s.log.Fatal("register function failed", zap.Error(err))
+		append(server.serveMuxOptions, propagateTracingMetadata(), generateFrameworkMetadata(), setMarshalerOption())...)
+	if server.registerFunction != nil {
+		if err := server.registerFunction(ctx, mux); err != nil {
+			return fmt.Errorf("register gateway route: %w", err)
 		}
 	}
 
 	handler := http.Handler(mux)
-	for i := len(s.middlewares) - 1; i >= 0; i-- {
-		handler = s.middlewares[i](handler)
+	for i := len(server.middlewares) - 1; i >= 0; i-- {
+		handler = server.middlewares[i](handler)
 	}
 
-	hs := &http.Server{
-		Addr:              s.address,
-		Handler:           recovery(allowCORSWithHeaders(propagateTracing(handler), s.corsAllowedHeaders)),
+	httpServer := &http.Server{
+		Addr:              server.address,
+		Handler:           recovery(allowCORSWithHeaders(propagateTracing(handler), server.corsAllowedHeaders)),
 		ReadHeaderTimeout: 15 * time.Second,
-		WriteTimeout:      s.writeTimeout,
+		WriteTimeout:      server.writeTimeout,
 	}
+	shutdownErrCh := make(chan error, 1)
+	go server.shutdownHTTPServer(ctx, httpServer, shutdownErrCh)
 
-	go func() {
-		<-ctx.Done()
-		s.log.Info("gateway.Shutdown now")
-		_ = hs.Shutdown(context.Background())
-	}()
-
-	if err := hs.ListenAndServe(); err != nil {
+	if err := httpServer.ListenAndServe(); err != nil {
 		if errors.Is(err, http.ErrServerClosed) {
-			return
+			select {
+			case shutdownErr := <-shutdownErrCh:
+				return shutdownErr
+			default:
+				return nil
+			}
 		}
-		s.log.Fatal("gateway.http.server.failed", zap.Error(err))
+		return fmt.Errorf("gateway http serve: %w", err)
 	}
+	return nil
+}
+
+// shutdownHTTPServer 优雅停止 HTTP 服务，并返回 shutdown 阶段错误
+func (server *HttpServer) shutdownHTTPServer(ctx context.Context, httpServer *http.Server, shutdownErrCh chan<- error) {
+	<-ctx.Done()
+	server.log.Info("gateway.Shutdown now")
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.WithoutCancel(ctx), defaultHTTPShutdownTimeout)
+	defer shutdownCancel()
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		shutdownErrCh <- fmt.Errorf("gateway http shutdown: %w", err)
+		return
+	}
+	shutdownErrCh <- nil
 }
