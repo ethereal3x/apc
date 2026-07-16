@@ -25,6 +25,8 @@ type GrpcServer struct {
 	unaryInterceptors []grpc.UnaryServerInterceptor
 	// 注册proto service
 	registerFunction func(*grpc.Server)
+	// panic 恢复策略
+	recoveryHandler GRPCRecoveryHandler
 }
 
 // SetInterceptors 设置 gRPC 流式和 unary 拦截器
@@ -38,17 +40,22 @@ func (server *GrpcServer) SetRegisterFunc(fn func(*grpc.Server)) {
 	server.registerFunction = fn
 }
 
+// SetRecoveryHandler 设置自定义 gRPC panic 错误映射策略
+func (server *GrpcServer) SetRecoveryHandler(handler GRPCRecoveryHandler) {
+	server.recoveryHandler = handler
+}
+
 // genServerOptions 生成 gRPC 服务端拦截器配置
 func (server *GrpcServer) genServerOptions() ([]grpc.StreamServerInterceptor, []grpc.UnaryServerInterceptor) {
 	streamInterceptors := []grpc.StreamServerInterceptor{
 		grpc_ctxtags.StreamServerInterceptor(grpc_ctxtags.WithFieldExtractor(grpc_ctxtags.CodeGenRequestFieldExtractor)),
-		grpc_recovery.StreamServerInterceptor(grpc_recovery.WithRecoveryHandler(goRoutineStack)),
+		grpc_recovery.StreamServerInterceptor(grpc_recovery.WithRecoveryHandlerContext(server.grpcRecoveryHandler)),
 	}
 	streamInterceptors = append(streamInterceptors, server.streamInterceptors...)
 
 	unaryInterceptors := []grpc.UnaryServerInterceptor{
 		grpc_ctxtags.UnaryServerInterceptor(grpc_ctxtags.WithFieldExtractor(grpc_ctxtags.CodeGenRequestFieldExtractor)),
-		grpc_recovery.UnaryServerInterceptor(grpc_recovery.WithRecoveryHandler(goRoutineStack)),
+		grpc_recovery.UnaryServerInterceptor(grpc_recovery.WithRecoveryHandlerContext(server.grpcRecoveryHandler)),
 	}
 	unaryInterceptors = append(unaryInterceptors, server.unaryInterceptors...)
 	return streamInterceptors, unaryInterceptors

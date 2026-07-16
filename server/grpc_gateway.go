@@ -23,6 +23,8 @@ type HttpServer struct {
 	writeTimeout       time.Duration
 	middlewares        []func(http.Handler) http.Handler
 	corsAllowedHeaders []string
+	corsPolicy         *corsPolicy
+	recoveryHandler    HTTPRecoveryHandler
 }
 
 // SetRegisterFunc 设置 HTTP gateway 路由注册回调函数
@@ -40,15 +42,32 @@ func (server *HttpServer) SetWriteTimeout(timeout time.Duration) {
 	server.writeTimeout = timeout
 }
 
-// SetMiddleware 设置 HTTP 中间件链，按顺序包裹在 grpc-gateway mux 外层
-// 中间件在 recovery/CORS/tracing 之后、mux 之前执行
+// SetMiddleware 设置 HTTP 中间件链，按顺序包裹在 CORS 和 grpc-gateway mux 外层
 func (server *HttpServer) SetMiddleware(middlewares ...func(http.Handler) http.Handler) {
 	server.middlewares = append(server.middlewares, middlewares...)
 }
 
 // SetCORSAllowedHeaders 设置 CORS 允许的自定义请求头，覆盖默认的 Content-Type/Accept/Authorization
+//
+// Deprecated: 使用 SetCORSConfig 配置完整且可关闭的 CORS 策略
 func (server *HttpServer) SetCORSAllowedHeaders(headers []string) {
-	server.corsAllowedHeaders = headers
+	server.corsAllowedHeaders = append([]string(nil), headers...)
+	server.corsPolicy = nil
+}
+
+// SetCORSConfig 校验并设置完整 CORS 策略，Enabled=false 时不处理任何跨域请求
+func (server *HttpServer) SetCORSConfig(config CORSConfig) error {
+	policy, err := newCORSPolicy(config)
+	if err != nil {
+		return err
+	}
+	server.corsPolicy = policy
+	return nil
+}
+
+// SetRecoveryHandler 设置自定义 HTTP panic 响应处理策略
+func (server *HttpServer) SetRecoveryHandler(handler HTTPRecoveryHandler) {
+	server.recoveryHandler = handler
 }
 
 // NewHttpServer 创建 HTTP gateway 服务实例
@@ -70,14 +89,9 @@ func (server *HttpServer) Run(ctx context.Context) error {
 		}
 	}
 
-	handler := http.Handler(mux)
-	for i := len(server.middlewares) - 1; i >= 0; i-- {
-		handler = server.middlewares[i](handler)
-	}
-
 	httpServer := &http.Server{
 		Addr:              server.address,
-		Handler:           recovery(allowCORSWithHeaders(propagateTracing(handler), server.corsAllowedHeaders)),
+		Handler:           server.buildHandler(mux),
 		ReadHeaderTimeout: 15 * time.Second,
 		WriteTimeout:      server.writeTimeout,
 	}
@@ -96,6 +110,27 @@ func (server *HttpServer) Run(ctx context.Context) error {
 		return fmt.Errorf("gateway http serve: %w", err)
 	}
 	return nil
+}
+
+// buildHandler 按 tracing、recovery、业务中间件、CORS 和 gateway 的顺序组装处理链
+func (server *HttpServer) buildHandler(next http.Handler) http.Handler {
+	handler := server.corsMiddleware(next)
+	for i := len(server.middlewares) - 1; i >= 0; i-- {
+		handler = server.middlewares[i](handler)
+	}
+	handler = server.recovery(handler)
+	return propagateTracing(handler)
+}
+
+// corsMiddleware 根据显式配置或旧版兼容模式构造 CORS 中间件
+func (server *HttpServer) corsMiddleware(next http.Handler) http.Handler {
+	if server.corsPolicy == nil {
+		return allowCORSWithHeaders(next, server.corsAllowedHeaders)
+	}
+	if !server.corsPolicy.config.Enabled {
+		return next
+	}
+	return server.corsPolicy.middleware(next)
 }
 
 // shutdownHTTPServer 优雅停止 HTTP 服务，并返回 shutdown 阶段错误

@@ -2,16 +2,12 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
-
-	os_runtime "runtime"
 
 	"github.com/ethereal3x/apc/config"
 	"github.com/ethereal3x/apc/logger"
@@ -20,9 +16,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	oteltrace "go.opentelemetry.io/otel/trace"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/status"
 )
 
 type Server struct {
@@ -46,23 +40,6 @@ func NewServer(addr string) Server {
 		log:     logger.NewLogger(&config.GetConf().Plugin.Log),
 		address: addr,
 	}
-}
-
-// goRoutineStack 捕获 panic 堆栈并转换为 gRPC 错误
-func goRoutineStack(panicValue interface{}) (err error) {
-	var buf [8192]byte
-	stackSize := os_runtime.Stack(buf[:], false)
-	stack := strings.Split(string(buf[:stackSize]), "\n")
-	var filteredStack strings.Builder
-	for i := 0; i < len(stack)-1; i++ {
-		line := stack[i]
-		if strings.Contains(line, "go-grpc-middleware") || strings.Contains(line, "google.golang.org") {
-			continue
-		}
-		filteredStack.WriteString(line + "\n")
-	}
-	fmt.Printf("panic: %v, stack: %s\n", panicValue, &filteredStack)
-	return status.Errorf(codes.Unknown, "panic triggered: %v", panicValue)
 }
 
 // generateFrameworkMetadata 生成 grpc-gateway 透传到 gRPC metadata 的框架信息
@@ -107,64 +84,6 @@ func propagateTracingMetadata() runtime.ServeMuxOption {
 		carrier := propagation.MapCarrier{}
 		otel.GetTextMapPropagator().Inject(ctx, carrier)
 		return metadata.Join(md.HeaderMD, metadata.New(carrier))
-	})
-}
-
-// recovery 捕获 HTTP handler panic 并返回 500
-func recovery(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
-		defer func() {
-			err := recover()
-			if err != nil {
-				_ = goRoutineStack(err)
-				jsonBody, _ := json.Marshal(map[string]interface{}{
-					"error": fmt.Sprintf("internal server panic: %v", err),
-				})
-				responseWriter.Header().Set("Content-Type", "application/json")
-				responseWriter.WriteHeader(http.StatusInternalServerError)
-				_, _ = responseWriter.Write(jsonBody)
-			}
-		}()
-		next.ServeHTTP(responseWriter, request)
-	})
-}
-
-// allowCORS 处理跨域请求头和预检请求
-func allowCORS(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
-		if origin := request.Header.Get("Origin"); origin != "" {
-			responseWriter.Header().Set("Access-Control-Allow-Origin", "*")
-			if request.Method == http.MethodOptions && request.Header.Get("Access-Control-Request-Method") != "" {
-				headers := []string{"Content-Type", "Accept", "Authorization"}
-				responseWriter.Header().Set("Access-Control-Allow-Headers", strings.Join(headers, ","))
-				methods := []string{"GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS"}
-				responseWriter.Header().Set("Access-Control-Allow-Methods", strings.Join(methods, ","))
-				responseWriter.WriteHeader(http.StatusNoContent)
-				return
-			}
-		}
-		next.ServeHTTP(responseWriter, request)
-	})
-}
-
-// allowCORSWithHeaders 处理跨域请求头和预检请求，支持自定义允许的请求头
-func allowCORSWithHeaders(next http.Handler, allowedHeaders []string) http.Handler {
-	if len(allowedHeaders) == 0 {
-		allowedHeaders = []string{"Content-Type", "Accept", "Authorization"}
-	}
-	allowedHeadersStr := strings.Join(allowedHeaders, ",")
-	return http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
-		if origin := request.Header.Get("Origin"); origin != "" {
-			responseWriter.Header().Set("Access-Control-Allow-Origin", "*")
-			if request.Method == http.MethodOptions && request.Header.Get("Access-Control-Request-Method") != "" {
-				responseWriter.Header().Set("Access-Control-Allow-Headers", allowedHeadersStr)
-				methods := []string{"GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS"}
-				responseWriter.Header().Set("Access-Control-Allow-Methods", strings.Join(methods, ","))
-				responseWriter.WriteHeader(http.StatusNoContent)
-				return
-			}
-		}
-		next.ServeHTTP(responseWriter, request)
 	})
 }
 

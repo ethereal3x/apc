@@ -301,10 +301,6 @@ func (client *HttpClient) UnmarshalBody(response *http.Response, out interface{}
 	if client.span == nil {
 		return nil
 	}
-	responseJSON, marshalErr := json.Marshal(out)
-	if marshalErr == nil {
-		client.span.AddEvent("response_body", trace.WithAttributes(attribute.String("body", string(responseJSON))))
-	}
 	return nil
 }
 
@@ -329,30 +325,31 @@ func (client *HttpClient) startSpanFromContext() {
 	if !client.EnableTrace {
 		return
 	}
+	safeURL := sanitizeTraceURL(client.Url)
 	tracerName := client.tracerName
 	if len(tracerName) == 0 {
-		tracerName = fmt.Sprintf("%s %s", client.Method, client.Url)
+		tracerName = fmt.Sprintf("%s %s", client.Method, safeURL)
 	}
 	client.Ctx, client.span = apctracing.Start(client.Ctx, tracerName)
 	client.spanFinished = false
 
 	client.span.SetAttributes(
 		attribute.String("http.method", client.Method),
-		attribute.String("http.url", client.Url),
+		attribute.String("http.url", safeURL),
 		attribute.String("component", "apc-http-client"),
 	)
-	if len(client.Headers) > 0 {
-		client.span.AddEvent("http.headers", trace.WithAttributes(attribute.String("headers", fmt.Sprintf("%v", client.Headers))))
+}
+
+// sanitizeTraceURL 移除 URL 中可能包含凭据或 token 的用户信息、查询参数和片段
+func sanitizeTraceURL(rawURL string) string {
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
 	}
-	if len(client.QueryParams) > 0 {
-		client.span.AddEvent("http.query_params", trace.WithAttributes(attribute.String("params", fmt.Sprintf("%v", client.QueryParams))))
-	}
-	if len(client.FormParams) > 0 {
-		client.span.AddEvent("http.form_data", trace.WithAttributes(attribute.String("params", fmt.Sprintf("%v", client.FormParams))))
-	}
-	if client.Body != nil {
-		client.span.AddEvent("http.request_body", trace.WithAttributes(attribute.String("body", fmt.Sprintf("%v", client.Body))))
-	}
+	parsedURL.User = nil
+	parsedURL.RawQuery = ""
+	parsedURL.Fragment = ""
+	return parsedURL.String()
 }
 
 // logError 记录 HTTP 请求链路错误
@@ -364,8 +361,8 @@ func (client *HttpClient) logError(errorType string, err error) {
 		attribute.String("http.error_type", errorType),
 		attribute.Bool("error", true),
 	)
-	client.span.SetStatus(codes.Error, err.Error())
-	client.span.RecordError(err)
+	client.span.SetStatus(codes.Error, errorType)
+	client.span.RecordError(errors.New(errorType))
 }
 
 // finishSpan 结束 HTTP 请求 tracing span

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -216,4 +217,60 @@ func TestRequestErrorReturnsWrappedError(t *testing.T) {
 	_, err := client.Do()
 	require.Error(t, err)
 	require.False(t, errors.Is(err, ErrParamsEmpty))
+}
+
+// TestHttpClientTracingDoesNotRecordSensitiveData 验证 tracing 不记录凭据、token 和请求响应正文
+func TestHttpClientTracingDoesNotRecordSensitiveData(t *testing.T) {
+	exporter := setupTestTracer()
+	server := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		require.Equal(t, "Bearer secret-authorization", request.Header.Get("Authorization"))
+		responseWriter.Header().Set("Content-Type", "application/json")
+		require.NoError(t, json.NewEncoder(responseWriter).Encode(map[string]string{
+			"access_token": "secret-response-token",
+		}))
+	}))
+	defer server.Close()
+
+	client := NewHttpClient(context.Background()).
+		SetMethod(http.MethodPost).
+		SetUrl(server.URL + "/token").
+		SetHeaders(map[string]interface{}{
+			"Authorization": "Bearer secret-authorization",
+			"Cookie":        "session=secret-cookie",
+		}).
+		SetQueryParams(map[string]interface{}{"code": "secret-query-code"}).
+		SetBody(map[string]interface{}{"client_secret": "secret-request-body"})
+	response, err := client.Do()
+	require.NoError(t, err)
+	var payload map[string]string
+	require.NoError(t, client.UnmarshalBody(response, &payload))
+	require.Equal(t, "secret-response-token", payload["access_token"])
+
+	spans := exporter.GetSpans()
+	require.Len(t, spans, 1)
+	spanData := fmt.Sprintf("%+v", spans[0])
+	for _, secret := range []string{
+		"secret-authorization",
+		"secret-cookie",
+		"secret-query-code",
+		"secret-request-body",
+		"secret-response-token",
+	} {
+		require.NotContains(t, spanData, secret)
+	}
+	require.NotContains(t, spans[0].Name, "secret-query-code")
+}
+
+// TestHttpClientErrorTracingDoesNotRecordSensitiveURL 验证网络错误 tracing 不记录查询参数中的 token
+func TestHttpClientErrorTracingDoesNotRecordSensitiveURL(t *testing.T) {
+	exporter := setupTestTracer()
+	_, err := NewHttpClient(context.Background()).
+		SetMethod(http.MethodGet).
+		SetUrl("http://127.0.0.1:0/callback?token=secret-error-token").
+		Do()
+	require.Error(t, err)
+
+	spans := exporter.GetSpans()
+	require.Len(t, spans, 1)
+	require.NotContains(t, fmt.Sprintf("%+v", spans[0]), "secret-error-token")
 }
