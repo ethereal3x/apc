@@ -145,23 +145,33 @@ func (policy *corsPolicy) writeResponseHeaders(headers http.Header, origin strin
 	}
 }
 
-// allowCORSWithHeaders 保留旧版通配 Origin 行为并支持自定义允许请求头
+// allowCORSWithHeaders 保留旧版兼容路径；预检回显具体 Origin 并允许 credentials，禁止返回 *
+// 生产环境请改用 SetCORSConfig 做 Origin 白名单收紧
 func allowCORSWithHeaders(next http.Handler, allowedHeaders []string) http.Handler {
 	if len(allowedHeaders) == 0 {
 		allowedHeaders = defaultCORSAllowedHeaders
 	}
 	allowedHeadersValue := strings.Join(allowedHeaders, ",")
 	return http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
-		if origin := request.Header.Get("Origin"); origin != "" {
-			if responseWriter.Header().Get("Access-Control-Allow-Origin") == "" {
-				responseWriter.Header().Set("Access-Control-Allow-Origin", "*")
-			}
-			if request.Method == http.MethodOptions && request.Header.Get("Access-Control-Request-Method") != "" {
-				responseWriter.Header().Set("Access-Control-Allow-Headers", allowedHeadersValue)
-				responseWriter.Header().Set("Access-Control-Allow-Methods", strings.Join(defaultCORSAllowedMethods, ","))
-				responseWriter.WriteHeader(http.StatusNoContent)
-				return
-			}
+		origin := strings.TrimSpace(request.Header.Get("Origin"))
+		if origin == "" {
+			next.ServeHTTP(responseWriter, request)
+			return
+		}
+		isPreflight := request.Method == http.MethodOptions && request.Header.Get("Access-Control-Request-Method") != ""
+		if isPreflight {
+			responseWriter.Header().Set("Access-Control-Allow-Origin", origin)
+			responseWriter.Header().Set("Access-Control-Allow-Credentials", "true")
+			responseWriter.Header().Add("Vary", "Origin")
+			responseWriter.Header().Set("Access-Control-Allow-Headers", allowedHeadersValue)
+			responseWriter.Header().Set("Access-Control-Allow-Methods", strings.Join(defaultCORSAllowedMethods, ","))
+			responseWriter.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if responseWriter.Header().Get("Access-Control-Allow-Origin") == "" {
+			responseWriter.Header().Set("Access-Control-Allow-Origin", origin)
+			responseWriter.Header().Set("Access-Control-Allow-Credentials", "true")
+			responseWriter.Header().Add("Vary", "Origin")
 		}
 		next.ServeHTTP(responseWriter, request)
 	})

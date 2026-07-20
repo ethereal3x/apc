@@ -212,7 +212,7 @@ func TestCORSDisabledDoesNotHandlePreflight(t *testing.T) {
 	}
 }
 
-// TestLegacyCORSAllowedHeadersRemainsCompatible 验证旧版 CORS Header 配置仍保留通配行为
+// TestLegacyCORSAllowedHeadersRemainsCompatible 验证旧版 CORS 预检回显 Origin 并支持 credentials
 func TestLegacyCORSAllowedHeadersRemainsCompatible(t *testing.T) {
 	server := &HttpServer{}
 	server.SetCORSAllowedHeaders([]string{"Content-Type", "X-Legacy-Token"})
@@ -225,7 +225,8 @@ func TestLegacyCORSAllowedHeadersRemainsCompatible(t *testing.T) {
 	handler.ServeHTTP(recorder, request)
 
 	require.Equal(t, http.StatusNoContent, recorder.Code)
-	require.Equal(t, "*", recorder.Header().Get("Access-Control-Allow-Origin"))
+	require.Equal(t, "https://legacy.example.com", recorder.Header().Get("Access-Control-Allow-Origin"))
+	require.Equal(t, "true", recorder.Header().Get("Access-Control-Allow-Credentials"))
 	require.Equal(t, "Content-Type,X-Legacy-Token", recorder.Header().Get("Access-Control-Allow-Headers"))
 }
 
