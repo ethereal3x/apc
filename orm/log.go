@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	apcLogger "github.com/ethereal3x/apc/logger"
@@ -59,7 +60,7 @@ func (gormLogger *GormLogger) Trace(ctx context.Context, begin time.Time, fc fun
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		if gormLogger.LogLevel >= logger.Error {
 			sql, rows := fc()
-			apcLogger.ContextError(ctx, "sql_exec_error", zap.Any("sql", sql), zap.Any("rows", rows),
+			apcLogger.ContextError(ctx, "sql_exec_error", zap.Any("sql", compactSQL(sql)), zap.Any("rows", rows),
 				zap.Any("stack_file", utils.FileWithLineNum()), zap.Any("elapsed_time", formatElapsedTime(begin)), zap.Any("err", err))
 		}
 		return
@@ -68,8 +69,13 @@ func (gormLogger *GormLogger) Trace(ctx context.Context, begin time.Time, fc fun
 		return
 	}
 	sql, rows := fc()
-	apcLogger.ContextInfo(ctx, "sql_exec_info", zap.Any("sql", sql), zap.Any("rows", rows),
+	apcLogger.ContextInfo(ctx, "sql_exec_info", zap.Any("sql", compactSQL(sql)), zap.Any("rows", rows),
 		zap.Any("stack_file", utils.FileWithLineNum()), zap.Any("elapsed_time", formatElapsedTime(begin)), zap.Any("err", err))
+}
+
+// compactSQL 将 SQL 换行与连续空白折叠为单空格，便于日志单行展示
+func compactSQL(sql string) string {
+	return strings.Join(strings.Fields(sql), " ")
 }
 
 // formatElapsedTime 格式化 SQL 执行耗时

@@ -41,3 +41,15 @@ func TestGormLoggerTraceLevel(t *testing.T) {
 		})
 	}
 }
+
+// TestCompactSQL 校验日志 SQL 折叠换行与制表空白
+func TestCompactSQL(t *testing.T) {
+	input := "SELECT\n\t\tmodel,\n\t\tSUM(user_tokens) AS total_input_tokens\n\tFROM tb_agent_dialogue"
+	want := "SELECT model, SUM(user_tokens) AS total_input_tokens FROM tb_agent_dialogue"
+	if got := compactSQL(input); got != want {
+		t.Fatalf("compactSQL() = %q, want %q", got, want)
+	}
+	if got := compactSQL("  select   1  "); got != "select 1" {
+		t.Fatalf("compactSQL spaces = %q, want %q", got, "select 1")
+	}
+}
