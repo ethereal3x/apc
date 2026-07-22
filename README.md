@@ -26,6 +26,7 @@ go get github.com/ethereal3x/apc
 | [`scheduler`](#pool--scheduler) | 秒级 Cron 调度 |
 | [`tool`](#tool--structure) | HTTP Client、Snowflake、随机数 |
 | [`structure`](#tool--structure) | 泛型链表 / 队列 / 栈 |
+| [`sshx`](#sshx) | SSH 连接池 / 命令执行 / SFTP / 跳板链 |
 
 ---
 
@@ -375,7 +376,81 @@ id := tool.GenSnowflakeID()
 **structure**：泛型 `LinkedList` / `Queue` / `Stack`，进程内数据结构，非并发安全。
 
 ---
+## sshx
+
+SSH 工具包：连接池、命令执行 / SFTP、KeepAlive、SSH 跳板链。均只接受 `*ssh.Client` / `net.Conn` 等通用类型，不含业务语义。
+
+**连接池**：引用计数 + 空闲回收 + 存活检测。`ClientDialer` 注入拨号逻辑；`Get` 返回绑定 generation 的 `Lease`，`Release` 幂等且不会误释放重建后的新连接。
+
+```go
+dialer := sshx.ClientDialFunc(func(ctx context.Context, key string) (*ssh.Client, []io.Closer, error) {
+    conn, err := net.Dial("tcp", key)
+    if err != nil {
+        return nil, nil, err
+    }
+    sshConn, chans, reqs, err := ssh.NewClientConn(conn, key, cfg)
+    if err != nil {
+        _ = conn.Close()
+        return nil, nil, err
+    }
+    return ssh.NewClient(sshConn, chans, reqs), nil, nil
+})
+pool := sshx.NewPool(dialer, sshx.PoolOptions{
+    IdleTimeout:        30 * time.Minute,
+    HealthCheckTimeout: 5 * time.Second,
+})
+defer pool.Close()
+
+lease, err := pool.Get(ctx, "10.0.0.1:22")
+if err != nil {
+    return err
+}
+defer lease.Release()
+client := lease.Client
+```
+
+**命令 / SFTP / KeepAlive**：ctx 取消时主动关闭连接打断阻塞；`RunCommand` 失败时仍返回已捕获输出，并保留 `*ssh.ExitError`。
+
+```go
+output, err := sshx.RunCommand(sshx.RunCommandParams{
+    Ctx: ctx, Client: client, Command: "uname -a", Settings: sshx.DefaultSettings(),
+})
+if err != nil {
+    return err
+}
+_ = output
+
+if err := sshx.WithSFTP(sshx.WithSFTPParams{
+    Ctx: ctx, Client: client,
+    Fn: func(sftpClient *sftp.Client) error { return sftpClient.Mkdir("/tmp/x") },
+}); err != nil {
+    return err
+}
+
+stop := sshx.StartKeepalive(client, 30*time.Second)
+defer stop()
+```
+
+**SSH 跳板链**：`Chain.Dial` 按 `Layers` 顺序经一层或多层 SSH 跳板连到目标；默认 Direct 拨号消费 `Settings`；返回的 `net.Conn` 关闭时级联关闭上游 SSH 客户端。
+
+```go
+chain := sshx.Chain{
+    Settings: sshx.DefaultSettings(),
+    Layers: []sshx.Layer{
+        {Type: sshx.SSHX_LAYER_SSH, Name: "jump", Host: "jump", Port: 22, SSHConfig: sshCfg},
+    },
+}
+conn, err := chain.Dial(ctx, "internal.host:22")
+if err != nil {
+    return err
+}
+defer conn.Close()
+```
+
+---
 
 ## 测试
 
-单元测试直接 `go test ./...`。依赖外部资源的集成测试使用 `//go:build integration` 标签。
+```bash
+go test ./...
+```
