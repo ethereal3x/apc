@@ -26,7 +26,7 @@ go get github.com/ethereal3x/apc
 | [`scheduler`](#pool--scheduler) | 秒级 Cron 调度 |
 | [`tool`](#tool--structure) | HTTP Client、Snowflake、随机数 |
 | [`structure`](#tool--structure) | 泛型链表 / 队列 / 栈 |
-| [`sshx`](#sshx) | SSH 连接池 / 命令执行 / SFTP / 跳板链 |
+| [`sshx`](#sshx) | SSH 连接池 / 命令执行 / 交互 Shell(PTY) / SFTP / 跳板链 |
 
 ---
 
@@ -378,7 +378,7 @@ id := tool.GenSnowflakeID()
 ---
 ## sshx
 
-SSH 工具包：连接池、命令执行 / SFTP、KeepAlive、SSH 跳板链。均只接受 `*ssh.Client` / `net.Conn` 等通用类型，不含业务语义。
+SSH 工具包：连接池、命令执行 / 交互 Shell(PTY) / SFTP、KeepAlive、SSH 跳板链。均只接受 `*ssh.Client` / `net.Conn` / `io` 等通用类型，不含业务语义。
 
 **连接池**：引用计数 + 空闲回收 + 存活检测。`ClientDialer` 注入拨号逻辑；`Get` 返回绑定 generation 的 `Lease`，`Release` 幂等且不会误释放重建后的新连接。
 
@@ -429,6 +429,48 @@ if err := sshx.WithSFTP(sshx.WithSFTPParams{
 
 stop := sshx.StartKeepalive(client, 30*time.Second)
 defer stop()
+```
+
+**交互 Shell（PTY）**：`OpenShell` 在已有 `*ssh.Client` 上 `NewSession` + `RequestPty` + `Shell()`（可用 `Command` 改为 `Start`）。只管理本次 Session，不进连接池；`ctx` 取消默认只关 Session（`CloseClientOnCancel` 才关 Client）。`NewSession` 成功后立即注册取消，以便打断后续启动阻塞；`CloseClientOnCancel=false` 时无法真正中断 `Client.NewSession`。调用方把 `Stdin`/`Stdout` 双向拷贝到任意 `io`（如 `net.Conn`），WebSocket 等由上层再桥接。
+
+```go
+shell, err := sshx.OpenShell(sshx.OpenShellParams{
+    Ctx: ctx, Client: client, Rows: 40, Cols: 120,
+})
+if err != nil {
+    return err
+}
+defer shell.Close()
+
+if err := shell.Resize(40, 120); err != nil {
+    return err
+}
+
+// 示例：与任意双向流桥接（此处用 net.Conn；WebSocket 同理先得到 io.Reader/Writer）
+errCh := make(chan error, 2)
+go func() {
+    _, copyErr := io.Copy(shell.Stdin, conn)
+    // conn EOF 后必须关闭 stdin，远端才能收到 EOF
+    _ = shell.Stdin.Close()
+    errCh <- copyErr
+}()
+go func() {
+    _, copyErr := io.Copy(conn, shell.Stdout)
+    errCh <- copyErr
+}()
+
+select {
+case <-ctx.Done():
+    _ = shell.Close()
+    err = ctx.Err()
+case copyErr := <-errCh:
+    _ = shell.Close()
+    err = copyErr
+}
+if waitErr := shell.Wait(); err == nil {
+    err = waitErr
+}
+return err
 ```
 
 **SSH 跳板链**：`Chain.Dial` 按 `Layers` 顺序经一层或多层 SSH 跳板连到目标；默认 Direct 拨号消费 `Settings`；返回的 `net.Conn` 关闭时级联关闭上游 SSH 客户端。
