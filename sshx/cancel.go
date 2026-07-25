@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"reflect"
 	"sync"
 
 	"github.com/ethereal3x/apc/logger"
@@ -19,6 +20,36 @@ func IsExpectedCloseErr(err error) bool {
 	return err == nil ||
 		errors.Is(err, io.EOF) ||
 		errors.Is(err, net.ErrClosed)
+}
+
+// logUnexpectedCloseErr 非预期关闭错误记 warn
+func logUnexpectedCloseErr(err error, message string, fields ...zap.Field) {
+	if err == nil || IsExpectedCloseErr(err) {
+		return
+	}
+	logger.Warn(message, append(fields, zap.Error(err))...)
+}
+
+// closeWithWarn 关闭 closer，非预期错误记 warn；兼容 typed nil
+func closeWithWarn(closer io.Closer, message string, fields ...zap.Field) {
+	if isNilIOCloser(closer) {
+		return
+	}
+	logUnexpectedCloseErr(closer.Close(), message, fields...)
+}
+
+// isNilIOCloser 判断 closer 是否为 nil 或带类型的 nil 指针/接口
+func isNilIOCloser(closer io.Closer) bool {
+	if closer == nil {
+		return true
+	}
+	value := reflect.ValueOf(closer)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Ptr, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 // CloseOnCancel 在 ctx 取消时关闭 closers，用于打断不感知 ctx 的阻塞 IO
@@ -40,12 +71,7 @@ func CloseOnCancel(ctx context.Context, closers ...io.Closer) (stop func()) {
 
 	afterStop := context.AfterFunc(ctx, func() {
 		for _, closer := range closers {
-			if closer == nil {
-				continue
-			}
-			if err := closer.Close(); err != nil && !IsExpectedCloseErr(err) {
-				logger.Warn("close on cancel", zap.Error(err))
-			}
+			closeWithWarn(closer, "close on cancel")
 		}
 		markFinished()
 	})

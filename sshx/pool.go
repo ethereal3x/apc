@@ -604,18 +604,9 @@ func (pool *Pool) cleanupIdle() {
 
 // closeSSHResources 关闭拨号产生的 client 与附加 closers
 func closeSSHResources(client *ssh.Client, closers []io.Closer) {
-	if client != nil {
-		if err := client.Close(); err != nil && !IsExpectedCloseErr(err) {
-			logger.Warn("close unused ssh client", zap.Error(err))
-		}
-	}
+	closeWithWarn(client, "close unused ssh client")
 	for _, closer := range closers {
-		if closer == nil {
-			continue
-		}
-		if err := closer.Close(); err != nil && !IsExpectedCloseErr(err) {
-			logger.Warn("close unused intermediate connection", zap.Error(err))
-		}
+		closeWithWarn(closer, "close unused intermediate connection")
 	}
 }
 

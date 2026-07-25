@@ -7,8 +7,6 @@ import (
 	"io"
 	"sync"
 
-	"github.com/ethereal3x/apc/logger"
-	"go.uber.org/zap"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -65,11 +63,7 @@ func RunCommand(params RunCommandParams) (CommandOutput, error) {
 	if err != nil {
 		return CommandOutput{}, err
 	}
-	defer func() {
-		if closeErr := session.Close(); closeErr != nil && !IsExpectedCloseErr(closeErr) {
-			logger.Warn("close ssh session", zap.Error(closeErr))
-		}
-	}()
+	defer closeWithWarn(session, "close ssh session")
 
 	capture := newSharedOutputCapture(maxBytes)
 	session.Stdout = capture.stdoutWriter()
@@ -84,12 +78,8 @@ func RunCommand(params RunCommandParams) (CommandOutput, error) {
 	select {
 	case runErr = <-runCh:
 	case <-params.Ctx.Done():
-		if closeErr := session.Close(); closeErr != nil && !IsExpectedCloseErr(closeErr) {
-			logger.Warn("close ssh session on cancel", zap.Error(closeErr))
-		}
-		if closeErr := params.Client.Close(); closeErr != nil && !IsExpectedCloseErr(closeErr) {
-			logger.Warn("close ssh client on cancel", zap.Error(closeErr))
-		}
+		closeWithWarn(session, "close ssh session on cancel")
+		closeWithWarn(params.Client, "close ssh client on cancel")
 		runErr = <-runCh
 		output := capture.snapshot()
 		return output, fmt.Errorf("sshx: run command %q: %w", params.Command, params.Ctx.Err())
@@ -141,11 +131,7 @@ func ExecWithStdio(params ExecWithStdioParams) error {
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if closeErr := session.Close(); closeErr != nil && !IsExpectedCloseErr(closeErr) {
-			logger.Warn("close ssh session", zap.Error(closeErr))
-		}
-	}()
+	defer closeWithWarn(session, "close ssh session")
 
 	if params.Stdin != nil {
 		session.Stdin = params.Stdin
@@ -168,12 +154,8 @@ func ExecWithStdio(params ExecWithStdioParams) error {
 		}
 		return nil
 	case <-params.Ctx.Done():
-		if closeErr := session.Close(); closeErr != nil && !IsExpectedCloseErr(closeErr) {
-			logger.Warn("close ssh session on cancel", zap.Error(closeErr))
-		}
-		if closeErr := params.Client.Close(); closeErr != nil && !IsExpectedCloseErr(closeErr) {
-			logger.Warn("close ssh client on cancel", zap.Error(closeErr))
-		}
+		closeWithWarn(session, "close ssh session on cancel")
+		closeWithWarn(params.Client, "close ssh client on cancel")
 		<-runCh
 		return fmt.Errorf("sshx: exec %q: %w", params.Command, params.Ctx.Err())
 	}
@@ -201,24 +183,14 @@ func newSSHSession(ctx context.Context, client *ssh.Client) (*ssh.Session, error
 			return nil, fmt.Errorf("sshx: create session: %w", result.err)
 		}
 		if err := ctx.Err(); err != nil {
-			if result.session != nil {
-				if closeErr := result.session.Close(); closeErr != nil && !IsExpectedCloseErr(closeErr) {
-					logger.Warn("close ssh session after create cancel race", zap.Error(closeErr))
-				}
-			}
+			closeWithWarn(result.session, "close ssh session after create cancel race")
 			return nil, fmt.Errorf("sshx: create session: %w", err)
 		}
 		return result.session, nil
 	case <-ctx.Done():
-		if closeErr := client.Close(); closeErr != nil && !IsExpectedCloseErr(closeErr) {
-			logger.Warn("close ssh client during session create cancel", zap.Error(closeErr))
-		}
+		closeWithWarn(client, "close ssh client during session create cancel")
 		result := <-done
-		if result.session != nil {
-			if closeErr := result.session.Close(); closeErr != nil && !IsExpectedCloseErr(closeErr) {
-				logger.Warn("close ssh session created after cancel", zap.Error(closeErr))
-			}
-		}
+		closeWithWarn(result.session, "close ssh session created after cancel")
 		return nil, fmt.Errorf("sshx: create session: %w", ctx.Err())
 	}
 }

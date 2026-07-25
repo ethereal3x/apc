@@ -6,8 +6,6 @@ import (
 	"io"
 	"sync"
 
-	"github.com/ethereal3x/apc/logger"
-	"go.uber.org/zap"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -128,10 +126,8 @@ func OpenShell(params OpenShellParams) (*Shell, error) {
 	if params.Client == nil {
 		return nil, fmt.Errorf("sshx: open shell: nil client")
 	}
-	if params.Ctx != nil {
-		if err := params.Ctx.Err(); err != nil {
-			return nil, fmt.Errorf("sshx: open shell: %w", err)
-		}
+	if err := openShellContextErr(params.Ctx); err != nil {
+		return nil, err
 	}
 	ptyConfig := resolveShellPTYConfig(params)
 
@@ -152,22 +148,29 @@ func OpenShell(params OpenShellParams) (*Shell, error) {
 		CombineStderr: params.CombineStderr,
 	}); err != nil {
 		_ = shell.Close()
-		if params.Ctx != nil {
-			if ctxErr := params.Ctx.Err(); ctxErr != nil {
-				return nil, fmt.Errorf("sshx: open shell: %w", ctxErr)
-			}
+		if ctxErr := openShellContextErr(params.Ctx); ctxErr != nil {
+			return nil, ctxErr
 		}
 		return nil, err
 	}
 
 	// 处理启动完成与 ctx 取消的竞态
-	if params.Ctx != nil {
-		if ctxErr := params.Ctx.Err(); ctxErr != nil {
-			_ = shell.Close()
-			return nil, fmt.Errorf("sshx: open shell: %w", ctxErr)
-		}
+	if err := openShellContextErr(params.Ctx); err != nil {
+		_ = shell.Close()
+		return nil, err
 	}
 	return shell, nil
+}
+
+// openShellContextErr 将可选 ctx 的取消/超时包装为 OpenShell 错误
+func openShellContextErr(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("sshx: open shell: %w", err)
+	}
+	return nil
 }
 
 // Resize 调整远端 PTY 窗口大小
@@ -299,6 +302,12 @@ func resolveShellPTYConfig(params OpenShellParams) shellPTYConfig {
 	return config
 }
 
+// shellSessionCreateResult 异步 NewSession 的结果
+type shellSessionCreateResult struct {
+	session shellBootstrap
+	err     error
+}
+
 // createShellSession 创建 shell 用 session；ctx 取消时默认只回收 session，可选关闭 client
 //
 // CloseClientOnCancel=false 时，crypto/ssh 的 Client.NewSession 无法被真正中断
@@ -316,11 +325,7 @@ func createShellSession(ctx context.Context, client *ssh.Client, closeClientOnCa
 		return nil, fmt.Errorf("sshx: create session: %w", err)
 	}
 
-	type createResult struct {
-		session shellBootstrap
-		err     error
-	}
-	resultCh := make(chan createResult, 1)
+	resultCh := make(chan shellSessionCreateResult, 1)
 	var resultMu sync.Mutex
 	var callerReturned bool
 
@@ -329,14 +334,10 @@ func createShellSession(ctx context.Context, client *ssh.Client, closeClientOnCa
 		resultMu.Lock()
 		defer resultMu.Unlock()
 		if callerReturned {
-			if session != nil {
-				if closeErr := session.Close(); closeErr != nil && !IsExpectedCloseErr(closeErr) {
-					logger.Warn("close ssh session created after cancel", zap.Error(closeErr))
-				}
-			}
+			closeBootstrapWithWarn(session, "close ssh session created after cancel")
 			return
 		}
-		resultCh <- createResult{session: session, err: err}
+		resultCh <- shellSessionCreateResult{session: session, err: err}
 	}()
 
 	select {
@@ -347,52 +348,44 @@ func createShellSession(ctx context.Context, client *ssh.Client, closeClientOnCa
 		if result.err != nil {
 			return nil, fmt.Errorf("sshx: create session: %w", result.err)
 		}
-		if err := ctx.Err(); err != nil {
-			if result.session != nil {
-				if closeErr := result.session.Close(); closeErr != nil && !IsExpectedCloseErr(closeErr) {
-					logger.Warn("close ssh session after create cancel race", zap.Error(closeErr))
-				}
-			}
-			if closeClientOnCancel {
-				if closeErr := closeSSHClient(client); closeErr != nil && !IsExpectedCloseErr(closeErr) {
-					logger.Warn("close ssh client after create cancel race", zap.Error(closeErr))
-				}
-			}
-			return nil, fmt.Errorf("sshx: create session: %w", err)
+		if err := ctx.Err(); err == nil {
+			return result.session, nil
 		}
-		return result.session, nil
+		closeBootstrapWithWarn(result.session, "close ssh session after create cancel race")
+		if closeClientOnCancel {
+			logUnexpectedCloseErr(closeSSHClient(client), "close ssh client after create cancel race")
+		}
+		return nil, fmt.Errorf("sshx: create session: %w", ctx.Err())
 	case <-ctx.Done():
 		if closeClientOnCancel {
-			if closeErr := closeSSHClient(client); closeErr != nil && !IsExpectedCloseErr(closeErr) {
-				logger.Warn("close ssh client during shell session create cancel", zap.Error(closeErr))
-			}
+			logUnexpectedCloseErr(closeSSHClient(client), "close ssh client during shell session create cancel")
 			result := <-resultCh
 			resultMu.Lock()
 			callerReturned = true
 			resultMu.Unlock()
-			if result.session != nil {
-				if closeErr := result.session.Close(); closeErr != nil && !IsExpectedCloseErr(closeErr) {
-					logger.Warn("close ssh session created after cancel", zap.Error(closeErr))
-				}
-			}
+			closeBootstrapWithWarn(result.session, "close ssh session created after cancel")
 			return nil, fmt.Errorf("sshx: create session: %w", ctx.Err())
 		}
-		// 不关 Client：无法打断 NewSession，交由创建 goroutine 关闭迟到 Session
+		// 不关 Client：无法打断 NewSession，持锁标记返回后尽量回收已就绪的 Session
 		resultMu.Lock()
 		callerReturned = true
 		select {
 		case result := <-resultCh:
 			resultMu.Unlock()
-			if result.session != nil {
-				if closeErr := result.session.Close(); closeErr != nil && !IsExpectedCloseErr(closeErr) {
-					logger.Warn("close ssh session created after cancel", zap.Error(closeErr))
-				}
-			}
+			closeBootstrapWithWarn(result.session, "close ssh session created after cancel")
 		default:
 			resultMu.Unlock()
 		}
 		return nil, fmt.Errorf("sshx: create session: %w", ctx.Err())
 	}
+}
+
+// closeBootstrapWithWarn 关闭 shellBootstrap，非预期错误记 warn
+func closeBootstrapWithWarn(session shellBootstrap, message string) {
+	if session == nil {
+		return
+	}
+	logUnexpectedCloseErr(session.Close(), message)
 }
 
 // bindAndStartShell 申请 PTY、绑定 stdio 并启动交互 shell

@@ -10,8 +10,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/ethereal3x/apc/logger"
-	"go.uber.org/zap"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -61,9 +59,7 @@ func (chain Chain) Dial(ctx context.Context, targetAddr string) (net.Conn, error
 				return nil, err
 			}
 			if err := settings.ApplyTCPOptions(conn); err != nil {
-				if closeErr := conn.Close(); closeErr != nil && !IsExpectedCloseErr(closeErr) {
-					logger.Warn("close conn after apply tcp options failure", zap.Error(closeErr))
-				}
+				closeWithWarn(conn, "close conn after apply tcp options failure")
 				return nil, fmt.Errorf("sshx: apply tcp options: %w", err)
 			}
 			return conn, nil
@@ -84,9 +80,7 @@ func (chain Chain) Dial(ctx context.Context, targetAddr string) (net.Conn, error
 			}
 			conn, err := client.DialContext(dialCtx, "tcp", addr)
 			if err != nil {
-				if closeErr := client.Close(); closeErr != nil && !IsExpectedCloseErr(closeErr) {
-					logger.Warn("close ssh client after dial failure", zap.Error(closeErr))
-				}
+				closeWithWarn(client, "close ssh client after dial failure")
 				return nil, fmt.Errorf("sshx: ssh layer %q dial %s: %w", current.Name, addr, err)
 			}
 			wrapped := wrapDeadlineConn(conn)
@@ -141,22 +135,16 @@ func dialSSHLayer(ctx context.Context, dial DialFunc, layer Layer) (*ssh.Client,
 	}()
 	select {
 	case <-ctx.Done():
-		if closeErr := conn.Close(); closeErr != nil && !IsExpectedCloseErr(closeErr) {
-			logger.Warn("close conn after ctx cancel", zap.Error(closeErr))
-		}
+		closeWithWarn(conn, "close conn after ctx cancel")
 		<-done
-		if handshakeErr == nil && sshConn != nil {
-			if closeErr := sshConn.Close(); closeErr != nil && !IsExpectedCloseErr(closeErr) {
-				logger.Warn("close ssh conn after cancel race", zap.Error(closeErr))
-			}
+		if handshakeErr == nil {
+			closeWithWarn(sshConn, "close ssh conn after cancel race")
 		}
 		return nil, fmt.Errorf("sshx: ssh layer %q handshake: %w", layer.Name, ctx.Err())
 	case <-done:
 	}
 	if handshakeErr != nil {
-		if closeErr := conn.Close(); closeErr != nil && !IsExpectedCloseErr(closeErr) {
-			logger.Warn("close conn after handshake failure", zap.Error(closeErr))
-		}
+		closeWithWarn(conn, "close conn after handshake failure")
 		return nil, fmt.Errorf("sshx: ssh layer %q handshake: %w", layer.Name, handshakeErr)
 	}
 	return ssh.NewClient(sshConn, channels, globalReqs), nil

@@ -10,7 +10,6 @@ import (
 	"os"
 	"path"
 
-	"github.com/ethereal3x/apc/logger"
 	"github.com/pkg/sftp"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/ssh"
@@ -44,11 +43,7 @@ func WithSFTP(params WithSFTPParams) error {
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if closeErr := sftpClient.Close(); closeErr != nil && !IsExpectedCloseErr(closeErr) {
-			logger.Warn("close sftp client", zap.Error(closeErr))
-		}
-	}()
+	defer closeWithWarn(sftpClient, "close sftp client")
 
 	stopWatch := CloseOnCancel(params.Ctx, sftpClient, params.Client)
 	fnErr := params.Fn(sftpClient)
@@ -92,21 +87,13 @@ func CopyBetween(params CopyBetweenParams) error {
 	if err != nil {
 		return fmt.Errorf("sshx: source sftp: %w", err)
 	}
-	defer func() {
-		if closeErr := srcSFTP.Close(); closeErr != nil && !IsExpectedCloseErr(closeErr) {
-			logger.Warn("close source sftp client", zap.Error(closeErr))
-		}
-	}()
+	defer closeWithWarn(srcSFTP, "close source sftp client")
 
 	dstSFTP, err := newSFTPClient(newSFTPClientParams{Ctx: params.Ctx, Client: params.DstClient})
 	if err != nil {
 		return fmt.Errorf("sshx: destination sftp: %w", err)
 	}
-	defer func() {
-		if closeErr := dstSFTP.Close(); closeErr != nil && !IsExpectedCloseErr(closeErr) {
-			logger.Warn("close destination sftp client", zap.Error(closeErr))
-		}
-	}()
+	defer closeWithWarn(dstSFTP, "close destination sftp client")
 
 	return copyBetweenSFTP(copyBetweenSFTPParams{
 		Ctx:       params.Ctx,
@@ -143,24 +130,14 @@ func newSFTPClient(params newSFTPClientParams) (*sftp.Client, error) {
 			return nil, fmt.Errorf("sshx: create sftp client: %w", result.err)
 		}
 		if err := params.Ctx.Err(); err != nil {
-			if result.client != nil {
-				if closeErr := result.client.Close(); closeErr != nil && !IsExpectedCloseErr(closeErr) {
-					logger.Warn("close sftp client after create cancel race", zap.Error(closeErr))
-				}
-			}
+			closeWithWarn(result.client, "close sftp client after create cancel race")
 			return nil, fmt.Errorf("sshx: create sftp client: %w", err)
 		}
 		return result.client, nil
 	case <-params.Ctx.Done():
-		if closeErr := params.Client.Close(); closeErr != nil && !IsExpectedCloseErr(closeErr) {
-			logger.Warn("close ssh client during sftp init cancel", zap.Error(closeErr))
-		}
+		closeWithWarn(params.Client, "close ssh client during sftp init cancel")
 		result := <-done
-		if result.client != nil {
-			if closeErr := result.client.Close(); closeErr != nil && !IsExpectedCloseErr(closeErr) {
-				logger.Warn("close sftp client created after cancel", zap.Error(closeErr))
-			}
-		}
+		closeWithWarn(result.client, "close sftp client created after cancel")
 		return nil, fmt.Errorf("sshx: create sftp client: %w", params.Ctx.Err())
 	}
 }
@@ -198,11 +175,7 @@ func runCopyBetweenSFTP(params copyBetweenSFTPParams) error {
 	if err != nil {
 		return fmt.Errorf("sshx: open source file %q: %w", params.SrcPath, err)
 	}
-	defer func() {
-		if closeErr := srcFile.Close(); closeErr != nil && !IsExpectedCloseErr(closeErr) {
-			logger.Warn("close source file", zap.String("path", params.SrcPath), zap.Error(closeErr))
-		}
-	}()
+	defer closeWithWarn(srcFile, "close source file", zap.String("path", params.SrcPath))
 
 	tmpPath, dstFile, err := createExclusiveSFTPTemp(params.DstSFTP, params.DstPath)
 	if err != nil {
@@ -214,24 +187,18 @@ func runCopyBetweenSFTP(params copyBetweenSFTPParams) error {
 		if !cleanupTemp {
 			return
 		}
-		if removeErr := params.DstSFTP.Remove(tmpPath); removeErr != nil && !IsExpectedCloseErr(removeErr) {
-			logger.Warn("remove temp file", zap.String("path", tmpPath), zap.Error(removeErr))
-		}
+		logUnexpectedCloseErr(params.DstSFTP.Remove(tmpPath), "remove temp file", zap.String("path", tmpPath))
 	}()
 
 	if _, err := io.Copy(dstFile, srcFile); err != nil {
-		if closeErr := dstFile.Close(); closeErr != nil && !IsExpectedCloseErr(closeErr) {
-			logger.Warn("close temp file after copy failure", zap.String("path", tmpPath), zap.Error(closeErr))
-		}
+		closeWithWarn(dstFile, "close temp file after copy failure", zap.String("path", tmpPath))
 		if params.Ctx.Err() != nil {
 			return fmt.Errorf("sshx: file transfer %q -> %q: %w", params.SrcPath, params.DstPath, params.Ctx.Err())
 		}
 		return fmt.Errorf("sshx: file transfer %q -> %q: %w", params.SrcPath, params.DstPath, err)
 	}
 	if err := params.Ctx.Err(); err != nil {
-		if closeErr := dstFile.Close(); closeErr != nil && !IsExpectedCloseErr(closeErr) {
-			logger.Warn("close temp file after cancel", zap.String("path", tmpPath), zap.Error(closeErr))
-		}
+		closeWithWarn(dstFile, "close temp file after cancel", zap.String("path", tmpPath))
 		return fmt.Errorf("sshx: file transfer %q -> %q: %w", params.SrcPath, params.DstPath, err)
 	}
 	if err := dstFile.Close(); err != nil {
