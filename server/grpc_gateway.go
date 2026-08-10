@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -11,10 +10,7 @@ import (
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 )
 
-const (
-	defaultWriteTimeout        = 15 * time.Second
-	defaultHTTPShutdownTimeout = 5 * time.Second
-)
+const defaultWriteTimeout = 15 * time.Second
 
 type HttpServer struct {
 	Server
@@ -23,7 +19,7 @@ type HttpServer struct {
 	writeTimeout       time.Duration
 	middlewares        []func(http.Handler) http.Handler
 	corsAllowedHeaders []string
-	corsPolicy         *corsPolicy
+	corsPolicy         *CORSPolicy
 	recoveryHandler    HTTPRecoveryHandler
 }
 
@@ -57,7 +53,7 @@ func (server *HttpServer) SetCORSAllowedHeaders(headers []string) {
 
 // SetCORSConfig 校验并设置完整 CORS 策略，Enabled=false 时不处理任何跨域请求
 func (server *HttpServer) SetCORSConfig(config CORSConfig) error {
-	policy, err := newCORSPolicy(config)
+	policy, err := NewCORSPolicy(config)
 	if err != nil {
 		return err
 	}
@@ -89,37 +85,12 @@ func (server *HttpServer) Run(ctx context.Context) error {
 		}
 	}
 
-	httpServer := &http.Server{
-		Addr:              server.address,
-		Handler:           server.buildHandler(mux),
-		ReadHeaderTimeout: 15 * time.Second,
-		WriteTimeout:      server.writeTimeout,
-	}
-	shutdownErrCh := make(chan error, 1)
-	go server.shutdownHTTPServer(ctx, httpServer, shutdownErrCh)
-
-	if err := httpServer.ListenAndServe(); err != nil {
-		if errors.Is(err, http.ErrServerClosed) {
-			select {
-			case shutdownErr := <-shutdownErrCh:
-				return shutdownErr
-			default:
-				return nil
-			}
-		}
-		return fmt.Errorf("gateway http serve: %w", err)
-	}
-	return nil
+	return ListenAndServeHTTP(ctx, server.address, server.buildHandler(mux), 0, server.writeTimeout, 0, server.log)
 }
 
 // buildHandler 按 tracing、recovery、业务中间件、CORS 和 gateway 的顺序组装处理链
 func (server *HttpServer) buildHandler(next http.Handler) http.Handler {
-	handler := server.corsMiddleware(next)
-	for i := len(server.middlewares) - 1; i >= 0; i-- {
-		handler = server.middlewares[i](handler)
-	}
-	handler = server.recovery(handler)
-	return propagateTracing(handler)
+	return BuildHTTPHandlerChain(next, server.middlewares, server.corsMiddleware(next), server.log, server.recoveryHandler)
 }
 
 // corsMiddleware 根据显式配置或旧版兼容模式构造 CORS 中间件
@@ -127,21 +98,8 @@ func (server *HttpServer) corsMiddleware(next http.Handler) http.Handler {
 	if server.corsPolicy == nil {
 		return allowCORSWithHeaders(next, server.corsAllowedHeaders)
 	}
-	if !server.corsPolicy.config.Enabled {
+	if !server.corsPolicy.Enabled() {
 		return next
 	}
-	return server.corsPolicy.middleware(next)
-}
-
-// shutdownHTTPServer 优雅停止 HTTP 服务，并返回 shutdown 阶段错误
-func (server *HttpServer) shutdownHTTPServer(ctx context.Context, httpServer *http.Server, shutdownErrCh chan<- error) {
-	<-ctx.Done()
-	server.log.Info("gateway.Shutdown now")
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.WithoutCancel(ctx), defaultHTTPShutdownTimeout)
-	defer shutdownCancel()
-	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		shutdownErrCh <- fmt.Errorf("gateway http shutdown: %w", err)
-		return
-	}
-	shutdownErrCh <- nil
+	return server.corsPolicy.Middleware(next)
 }

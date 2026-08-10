@@ -36,6 +36,8 @@ type LoadOptions struct {
 type ServerConf struct {
 	GrpcAddr    string `yaml:"grpc_addr" json:"grpc_addr"`
 	GatewayAddr string `yaml:"gateway_addr" json:"gateway_addr"`
+	GinAddr     string `yaml:"gin_addr" json:"gin_addr"`
+	HertzAddr   string `yaml:"hertz_addr" json:"hertz_addr"`
 	Env         string `yaml:"env" json:"env"`
 }
 

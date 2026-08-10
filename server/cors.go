@@ -25,7 +25,8 @@ type CORSConfig struct {
 	MaxAge           time.Duration
 }
 
-type corsPolicy struct {
+// CORSPolicy 编译后的跨域访问策略，可被 net/http 和 hertz 等适配层复用
+type CORSPolicy struct {
 	config          CORSConfig
 	allowedOrigins  map[string]struct{}
 	allowedMethods  map[string]struct{}
@@ -33,8 +34,8 @@ type corsPolicy struct {
 	wildcardOrigins bool
 }
 
-// newCORSPolicy 校验并编译 CORS 配置为请求匹配策略
-func newCORSPolicy(config CORSConfig) (*corsPolicy, error) {
+// NewCORSPolicy 校验并编译 CORS 配置为请求匹配策略
+func NewCORSPolicy(config CORSConfig) (*CORSPolicy, error) {
 	if config.MaxAge < 0 {
 		return nil, errors.New("cors: max age cannot be negative")
 	}
@@ -44,7 +45,7 @@ func newCORSPolicy(config CORSConfig) (*corsPolicy, error) {
 	if len(config.AllowedHeaders) == 0 {
 		config.AllowedHeaders = append([]string(nil), defaultCORSAllowedHeaders...)
 	}
-	policy := &corsPolicy{
+	policy := &CORSPolicy{
 		config:         config,
 		allowedOrigins: make(map[string]struct{}, len(config.AllowedOrigins)),
 		allowedMethods: make(map[string]struct{}, len(config.AllowedMethods)),
@@ -75,11 +76,31 @@ func newCORSPolicy(config CORSConfig) (*corsPolicy, error) {
 	return policy, nil
 }
 
-// middleware 执行实际请求和预检请求的统一 CORS 策略
-func (policy *corsPolicy) middleware(next http.Handler) http.Handler {
+// Enabled 返回策略是否启用，关闭时适配层应直接透传请求
+func (policy *CORSPolicy) Enabled() bool {
+	return policy.config.Enabled
+}
+
+// AllowedMethods 返回策略允许的方法列表副本
+func (policy *CORSPolicy) AllowedMethods() []string {
+	return append([]string(nil), policy.config.AllowedMethods...)
+}
+
+// AllowedHeaders 返回策略允许请求头列表副本
+func (policy *CORSPolicy) AllowedHeaders() []string {
+	return append([]string(nil), policy.config.AllowedHeaders...)
+}
+
+// MaxAge 返回预检结果缓存时长
+func (policy *CORSPolicy) MaxAge() time.Duration {
+	return policy.config.MaxAge
+}
+
+// Middleware 执行实际请求和预检请求的统一 CORS 策略
+func (policy *CORSPolicy) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
 		origin := strings.TrimSpace(request.Header.Get("Origin"))
-		if origin == "" || !policy.isOriginAllowed(origin) {
+		if origin == "" || !policy.IsOriginAllowed(origin) {
 			next.ServeHTTP(responseWriter, request)
 			return
 		}
@@ -88,7 +109,7 @@ func (policy *corsPolicy) middleware(next http.Handler) http.Handler {
 			responseWriter.WriteHeader(http.StatusForbidden)
 			return
 		}
-		policy.writeResponseHeaders(responseWriter.Header(), origin)
+		policy.WriteResponseHeaders(responseWriter.Header(), origin)
 		if !isPreflight {
 			next.ServeHTTP(responseWriter, request)
 			return
@@ -102,8 +123,8 @@ func (policy *corsPolicy) middleware(next http.Handler) http.Handler {
 	})
 }
 
-// isOriginAllowed 判断请求 Origin 是否匹配精确白名单或无凭据通配策略
-func (policy *corsPolicy) isOriginAllowed(origin string) bool {
+// IsOriginAllowed 判断请求 Origin 是否匹配精确白名单或无凭据通配策略
+func (policy *CORSPolicy) IsOriginAllowed(origin string) bool {
 	if policy.wildcardOrigins {
 		return true
 	}
@@ -111,26 +132,34 @@ func (policy *corsPolicy) isOriginAllowed(origin string) bool {
 	return allowed
 }
 
-// isPreflightAllowed 校验预检请求的方法和请求头均在允许列表内
-func (policy *corsPolicy) isPreflightAllowed(request *http.Request) bool {
-	requestedMethod := strings.ToUpper(strings.TrimSpace(request.Header.Get("Access-Control-Request-Method")))
+// IsPreflightAllowed 校验预检请求的方法和请求头均在允许列表内
+func (policy *CORSPolicy) IsPreflightAllowed(requestedMethod, requestedHeaders string) bool {
+	requestedMethod = strings.ToUpper(strings.TrimSpace(requestedMethod))
 	if _, allowed := policy.allowedMethods[requestedMethod]; !allowed {
 		return false
 	}
-	for _, requestedHeader := range strings.Split(request.Header.Get("Access-Control-Request-Headers"), ",") {
-		requestedHeader = strings.ToLower(strings.TrimSpace(requestedHeader))
-		if requestedHeader == "" {
+	for _, header := range strings.Split(requestedHeaders, ",") {
+		header = strings.ToLower(strings.TrimSpace(header))
+		if header == "" {
 			continue
 		}
-		if _, allowed := policy.allowedHeaders[requestedHeader]; !allowed {
+		if _, allowed := policy.allowedHeaders[header]; !allowed {
 			return false
 		}
 	}
 	return true
 }
 
-// writeResponseHeaders 写入已授权 Origin 对应的 CORS 响应头
-func (policy *corsPolicy) writeResponseHeaders(headers http.Header, origin string) {
+// isPreflightAllowed 校验 net/http 预检请求是否在允许列表内
+func (policy *CORSPolicy) isPreflightAllowed(request *http.Request) bool {
+	return policy.IsPreflightAllowed(
+		request.Header.Get("Access-Control-Request-Method"),
+		request.Header.Get("Access-Control-Request-Headers"),
+	)
+}
+
+// WriteResponseHeaders 写入已授权 Origin 对应的 CORS 响应头
+func (policy *CORSPolicy) WriteResponseHeaders(headers http.Header, origin string) {
 	if policy.wildcardOrigins {
 		headers.Set("Access-Control-Allow-Origin", "*")
 	} else {

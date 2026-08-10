@@ -29,9 +29,19 @@ func (server *Server) SetAddress(address string) {
 	server.address = address
 }
 
+// Address 返回服务监听地址
+func (server *Server) Address() string {
+	return server.address
+}
+
 // SetLogger 设置自定义 logger 实例
 func (server *Server) SetLogger(log logger.Logger) {
 	server.log = log
+}
+
+// Logger 返回服务 logger 实例
+func (server *Server) Logger() logger.Logger {
+	return server.log
 }
 
 // NewServer 创建基础服务实例
@@ -87,17 +97,6 @@ func propagateTracingMetadata() runtime.ServeMuxOption {
 	})
 }
 
-// propagateTracing 创建并透传 HTTP gateway 入口 tracing span
-func propagateTracing(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
-		ctx := otel.GetTextMapPropagator().Extract(request.Context(), propagation.HeaderCarrier(request.Header))
-		ctx, span := apctracing.Start(ctx, fmt.Sprintf("HTTP-gRPC %s %s", request.Method, request.URL.Path))
-		defer span.End()
-		responseWriter.Header().Set("Tracing-Id", apctracing.TraceID(ctx))
-		next.ServeHTTP(responseWriter, request.WithContext(ctx))
-	})
-}
-
 // Runner 是可被 Supervisor 编排的服务，Run 在 ctx 取消前阻塞，返回服务运行期间的错误
 type Runner interface {
 	Run(ctx context.Context) error
@@ -115,6 +114,29 @@ func RunGrpcGatewayService(grpcServer *GrpcServer, httpServer *HttpServer) {
 // RunGrpcGatewayServiceContext 启动 gRPC 和 HTTP gateway 服务，任一服务出错时取消其他服务
 // 信号监听由调用方负责，ctx 取消后所有服务执行优雅关闭
 func RunGrpcGatewayServiceContext(ctx context.Context, grpcServer *GrpcServer, httpServer *HttpServer) error {
+	var servers []Runner
+	if grpcServer != nil && grpcServer.address != "" {
+		servers = append(servers, grpcServer)
+	}
+	if httpServer != nil && httpServer.address != "" {
+		servers = append(servers, httpServer)
+	}
+	return RunServiceContext(ctx, servers...)
+}
+
+// RunServices 按服务编排任意实现了 Runner 的服务（gRPC、grpc-gateway、gin、hertz 等），
+// 监听系统信号并在服务错误时退出
+func RunServices(servers ...Runner) {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	if err := RunServiceContext(ctx, servers...); err != nil {
+		log.Fatalf("run services failed: %v", err)
+	}
+}
+
+// RunServiceContext 按服务编排任意实现了 Runner 的服务（gRPC、grpc-gateway、gin、hertz 等），
+// 任一服务出错时取消其他服务；信号监听由调用方负责，ctx 取消后所有服务执行优雅关闭
+func RunServiceContext(ctx context.Context, servers ...Runner) error {
 	shutdownTracing, err := initTracingProvider()
 	if err != nil {
 		return err
@@ -136,11 +158,10 @@ func RunGrpcGatewayServiceContext(ctx context.Context, grpcServer *GrpcServer, h
 	defer cancel()
 
 	var runners []Runner
-	if grpcServer != nil && grpcServer.address != "" {
-		runners = append(runners, grpcServer)
-	}
-	if httpServer != nil && httpServer.address != "" {
-		runners = append(runners, httpServer)
+	for _, server := range servers {
+		if server != nil {
+			runners = append(runners, server)
+		}
 	}
 	if len(runners) == 0 {
 		return nil
